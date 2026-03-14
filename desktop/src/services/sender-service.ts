@@ -30,29 +30,14 @@ const ensureDir = (dir: string): void => {
   }
 };
 
-const deleteIndexTxtFiles = (rootDir: string): number => {
-  let removed = 0;
-  const stack = [rootDir];
-
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (!current) continue;
-
-    const entries = fs.readdirSync(current, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(fullPath);
-        continue;
-      }
-      if (entry.isFile() && entry.name === 'index.txt') {
-        fs.unlinkSync(fullPath);
-        removed += 1;
-      }
-    }
-  }
-
-  return removed;
+const formatDateTimeForFileName = (date: Date): string => {
+  const pad2 = (value: number): string => String(value).padStart(2, '0');
+  const mm = pad2(date.getMonth() + 1);
+  const dd = pad2(date.getDate());
+  const hh = pad2(date.getHours());
+  const mi = pad2(date.getMinutes());
+  const ss = pad2(date.getSeconds());
+  return `${mm}${dd}_${hh}${mi}${ss}`;
 };
 
 const validateProjectBeforeBuild = async (
@@ -127,18 +112,16 @@ const buildProjectArtifact = async (
     `构建输出目录为空: ${outputDir}`,
   );
 
-  // Next.js + Cloudflare 场景：先清理 index.txt，避免静置后命中 txt 页面
-  const removedIndexTxtCount = deleteIndexTxtFiles(outputDir);
-  if (removedIndexTxtCount > 0) {
-    log(`✓ 已清理 index.txt 文件 ${removedIndexTxtCount} 个`);
-  } else {
-    log('ℹ 未发现 index.txt 文件，无需清理');
-  }
-
-  // 打包产物固定放回目标项目目录，方便定位与排查
-  const artifactDir = path.resolve(project.projectPath, '.web-publisher-artifacts');
+  // 支持自定义压缩包输出目录；未配置时回退到项目目录下默认路径
+  const customArtifactDir = project.artifactOutputDir?.trim();
+  const artifactDir = customArtifactDir
+    ? (path.isAbsolute(customArtifactDir)
+      ? customArtifactDir
+      : path.resolve(project.projectPath, customArtifactDir))
+    : path.resolve(project.projectPath, '.web-publisher-artifacts');
   ensureDir(artifactDir);
-  const zipName = `artifact_${project.id}_${Date.now()}.zip`;
+  const normalizedProjectName = (project.name || project.id).trim().replace(/\s+/g, '_');
+  const zipName = `${normalizedProjectName}_${formatDateTimeForFileName(new Date())}.zip`;
   const zipPath = path.join(artifactDir, zipName);
   if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 

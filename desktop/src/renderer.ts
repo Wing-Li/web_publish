@@ -74,6 +74,7 @@ const newProjectTemplate = (): SenderProject => ({
   projectPath: '',
   buildCommand: 'npm run build',
   buildOutputDir: 'dist',
+  artifactOutputDir: '',
   gitBranch: 'main',
   receiverBaseUrl: 'http://127.0.0.1:17777',
   receiverToken: 'change-me',
@@ -433,6 +434,14 @@ const renderProjectCard = (project: SenderProject): HTMLElement => {
             <button class="btn-ghost btn-sm shrink-0" data-action="refresh-branches" data-id="${project.id}">刷新</button>
           </div>
         </div>
+        <div>
+          <label class="form-label">压缩包输出目录（可选）</label>
+          <div class="flex gap-2">
+            <input id="${projectInputId(project.id, 'artifactOutputDir')}" class="form-input" value="${esc(project.artifactOutputDir)}"
+                   placeholder="留空则默认 .web-publisher-artifacts" readonly />
+            <button class="btn-ghost btn-sm shrink-0" data-action="pick-artifact-path" data-id="${project.id}">选择</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -477,6 +486,7 @@ const collectProjects = (): SenderProject[] =>
     projectPath:      getVal(projectInputId(p.id, 'projectPath'))     || p.projectPath,
     buildCommand:     getVal(projectInputId(p.id, 'buildCommand'))    || p.buildCommand,
     buildOutputDir:   getVal(projectInputId(p.id, 'buildOutputDir'))  || p.buildOutputDir,
+    artifactOutputDir:getVal(projectInputId(p.id, 'artifactOutputDir')),
     gitBranch:        getSelectVal(projectBranchSelectId(p.id))       || p.gitBranch,
     receiverBaseUrl:  getVal(projectInputId(p.id, 'receiverBaseUrl')) || p.receiverBaseUrl,
     receiverToken:    getVal(projectInputId(p.id, 'receiverToken'))   || p.receiverToken,
@@ -768,6 +778,21 @@ const bindProjectEvents = (): void => {
         await loadBranchesForProject(projectId, selectedPath);
         renderProjectCards();
         showToast('目录已选择，分支列表已刷新', 'success');
+      } catch (err) { handleError(err, projectId); }
+      return;
+    }
+
+    // ── 选择压缩包输出目录 ──
+    if (action === 'pick-artifact-path') {
+      const project = config.senderProjects.find(p => p.id === projectId);
+      if (!project) return;
+      try {
+        const selectedPath = await window.desktopApi.pickDirectory(project.artifactOutputDir);
+        if (!selectedPath) return;
+        project.artifactOutputDir = selectedPath;
+        const input = document.getElementById(projectInputId(projectId, 'artifactOutputDir')) as HTMLInputElement | null;
+        if (input) input.value = selectedPath;
+        showToast('压缩包输出目录已选择', 'success');
       } catch (err) { handleError(err, projectId); }
       return;
     }

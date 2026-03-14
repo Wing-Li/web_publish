@@ -9,6 +9,7 @@ const createDefaultProject = (): SenderProject => ({
   projectPath: '',
   buildCommand: 'npm run build',
   buildOutputDir: 'dist',
+  artifactOutputDir: '',
   gitBranch: 'main',
   receiverBaseUrl: 'http://127.0.0.1:17777',
   receiverToken: 'change-me',
@@ -38,6 +39,7 @@ interface LegacyConfig {
     projectPath?: string;
     buildCommand?: string;
     buildOutputDir?: string;
+    artifactOutputDir?: string;
     gitBranch?: string;
     receiverBaseUrl?: string;
     receiverToken?: string;
@@ -75,6 +77,7 @@ const normalizeProjects = (
         projectPath: profile.projectPath ?? '',
         buildCommand: profile.buildCommand ?? 'npm run build',
         buildOutputDir: profile.buildOutputDir ?? 'dist',
+        artifactOutputDir: profile.artifactOutputDir ?? '',
         gitBranch: profile.gitBranch ?? 'main',
         receiverBaseUrl: profile.receiverBaseUrl ?? 'http://127.0.0.1:17777',
         receiverToken: profile.receiverToken ?? 'change-me',

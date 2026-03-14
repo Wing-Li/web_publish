@@ -6,6 +6,7 @@ export interface SenderProject {
   projectPath: string;
   buildCommand: string;
   buildOutputDir: string;
+  artifactOutputDir: string;
   gitBranch: string;
   receiverBaseUrl: string;
   receiverToken: string;
