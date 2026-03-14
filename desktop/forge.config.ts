@@ -10,6 +10,7 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    name: '便捷打包工具',
   },
   rebuildConfig: {},
   makers: [
