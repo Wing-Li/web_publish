@@ -1,6 +1,7 @@
 {
   "name": "desktop",
   "productName": "便捷打包工具",
+  "displayName": "便捷打包工具",
   "version": "1.0.0",
   "description": "My Electron application description",
   "main": ".vite/build/main.js",

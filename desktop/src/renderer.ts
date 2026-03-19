@@ -1,4 +1,5 @@
 import './index.css';
+import logoUrl from './assets/logo.svg';
 import {
   AppConfig,
   AppMode,
@@ -43,10 +44,13 @@ const projectBusyMap = new Map<string, boolean>();           // projectId → bu
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let receiverPollTimer: ReturnType<typeof setInterval> | null = null;
+let bothModeFocus: 'sender' | 'receiver' = 'sender';
 
 // projectId → 日志文本（含历史，上限 50KB）
 const projectLogMap = new Map<string, string>();
 const LOG_MAX_BYTES = 50 * 1024;
+const receiverLogExpandedSet = new Set<string>();
+const receiverLogScrollMap = new Map<string, number>();
 
 // ─── 工具函数 ────────────────────────────────────────────────────────────────
 
@@ -126,31 +130,59 @@ document.body.innerHTML += `
   <!-- 标题栏 -->
   <header class="flex items-center justify-between">
     <div>
-      <h1 class="text-2xl font-bold text-slate-800 tracking-tight">网页发布工具</h1>
+      <h1 class="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+        <img src="${logoUrl}" alt="便捷打包工具 Logo" class="w-7 h-7 text-teal-700" />
+        <span>网页发布工具</span>
+      </h1>
       <p class="text-sm text-slate-500 mt-0.5">本地构建 → 压缩 → 上传 → Cloudflare Pages 自动部署</p>
     </div>
     <span id="configPathTip" class="text-xs text-slate-400 max-w-xs truncate text-right"></span>
   </header>
 
-  <!-- 运行模式 -->
+  <!-- 运行模式 + 概览 -->
   <section class="card">
     <h2 class="text-sm font-semibold text-slate-700 mb-3">运行模式</h2>
-    <div class="flex gap-6">
-      <label class="flex items-center gap-2 cursor-pointer">
+    <div class="flex flex-wrap gap-6">
+      <label class="flex items-center gap-2 cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2">
         <input type="radio" name="mode" value="sender" class="accent-teal-600" />
         <span class="text-sm font-medium">发送端</span>
         <span class="text-xs text-slate-400">（本地打包 → 上传）</span>
       </label>
-      <label class="flex items-center gap-2 cursor-pointer">
+      <label class="flex items-center gap-2 cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2">
         <input type="radio" name="mode" value="receiver" class="accent-teal-600" />
         <span class="text-sm font-medium">接收端</span>
         <span class="text-xs text-slate-400">（远程机接收部署）</span>
       </label>
-      <label class="flex items-center gap-2 cursor-pointer">
+      <label class="flex items-center gap-2 cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2">
         <input type="radio" name="mode" value="both" class="accent-teal-600" />
         <span class="text-sm font-medium">双模式</span>
         <span class="text-xs text-slate-400">（本机调试用）</span>
       </label>
+    </div>
+    <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+      <div class="rounded-xl border border-slate-200 bg-white px-3 py-2">
+        <p class="text-slate-400">当前模式</p>
+        <p id="overviewMode" class="mt-0.5 text-slate-700 font-semibold">-</p>
+      </div>
+      <div class="rounded-xl border border-slate-200 bg-white px-3 py-2">
+        <p class="text-slate-400">项目数量</p>
+        <p id="overviewProjectCount" class="mt-0.5 text-slate-700 font-semibold">0</p>
+      </div>
+      <div class="rounded-xl border border-slate-200 bg-white px-3 py-2">
+        <p class="text-slate-400">接收服务</p>
+        <p id="overviewReceiverStatus" class="mt-0.5 text-slate-700 font-semibold">未知</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 双模式焦点切换 -->
+  <section id="bothModeSwitcher" class="card hidden">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <h2 class="text-sm font-semibold text-slate-700">工作区切换</h2>
+      <div class="inline-flex items-center rounded-xl border border-slate-200 bg-slate-50 p-1">
+        <button id="focusSenderBtn" class="btn-focus-active px-3 py-1.5 text-xs font-semibold rounded-lg">发送端工作区</button>
+        <button id="focusReceiverBtn" class="btn-focus-idle px-3 py-1.5 text-xs font-semibold rounded-lg">接收端工作区</button>
+      </div>
     </div>
   </section>
 
@@ -170,16 +202,35 @@ document.body.innerHTML += `
   <!-- 接收端配置 -->
   <section id="receiverSection" class="card">
     <h2 class="text-sm font-semibold text-slate-700 mb-4">接收端配置</h2>
-    <div class="grid grid-cols-2 gap-x-6 gap-y-3">
+    <div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+      <p class="text-xs font-semibold text-amber-800">接收端首次使用指引</p>
+      <ol class="mt-2 list-decimal pl-4 text-xs text-amber-900 space-y-1.5">
+        <li>Wrangler 准备：先执行 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">npx wrangler --version</code>（拉取并验证 CLI）；需要交互登录时执行 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">npx wrangler login</code>（使用 API Token 模式可跳过登录）。</li>
+        <li>Cloudflare Tunnel 安装（可选，用于外网访问家庭电脑）：执行 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">brew install cloudflared</code>。</li>
+        <li>安装并注册 Tunnel 系统服务：执行 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">sudo cloudflared service install &lt;TUNNEL_TOKEN&gt;</code>。</li>
+        <li>检查 Tunnel 服务状态：执行 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">sudo launchctl list | grep -i cloudflared</code>（有输出表示服务已注册/运行）。</li>
+        <li>Cloudflare 控制台给 Tunnel 添加 Published application 路由，目标填 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">http://127.0.0.1:17777</code>，然后访问 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">https://你的域名/healthz</code> 验证可达。</li>
+        <li>发送端配置中把接收端地址改为 Tunnel 域名（如 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">https://deploy.example.com</code>），Token 与接收端鉴权 Token 保持一致。</li>
+        <li>不再使用 Tunnel 时先停/卸载服务：<code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">sudo cloudflared service uninstall</code>，再执行 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">sudo launchctl list | grep -i cloudflared</code> 确认已移除。</li>
+        <li>若需彻底移除 cloudflared，再执行 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded">brew uninstall cloudflared</code>。</li>
+        <li>最后回到本工具启动接收服务，再发起发布。</li>
+      </ol>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
       <div><label class="form-label">监听地址</label><input id="receiverHost" class="form-input" /></div>
       <div><label class="form-label">监听端口</label><input id="receiverPort" type="number" class="form-input" /></div>
       <div><label class="form-label">鉴权 Token</label><input id="authToken" type="password" class="form-input" /></div>
-      <div><label class="form-label">最大上传（MB）</label><input id="maxUploadMb" type="number" class="form-input" /></div>
-      <div><label class="form-label">工作目录名（位于用户主目录）</label><input id="workRootName" class="form-input" /></div>
-      <div><label class="form-label">Wrangler 命令</label><input id="wranglerBin" class="form-input" /></div>
       <div><label class="form-label">Cloudflare API Token</label><input id="cfToken" type="password" class="form-input" /></div>
       <div><label class="form-label">Cloudflare Account ID</label><input id="cfAccountId" class="form-input" /></div>
     </div>
+    <details class="mt-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2">
+      <summary class="cursor-pointer text-xs font-medium text-slate-600">高级配置（可选，通常无需修改）</summary>
+      <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+        <div><label class="form-label">最大上传（MB）</label><input id="maxUploadMb" type="number" class="form-input" /></div>
+        <div><label class="form-label">Wrangler 命令</label><input id="wranglerBin" class="form-input" /></div>
+        <div class="md:col-span-2"><label class="form-label">工作目录名（位于用户主目录）</label><input id="workRootName" class="form-input" /></div>
+      </div>
+    </details>
 
     <!-- 接收服务控制 -->
     <div class="mt-4 flex items-center gap-3">
@@ -199,9 +250,12 @@ document.body.innerHTML += `
     <div id="receiverTasksWrap" class="flex flex-col gap-2 text-sm text-slate-500 italic">暂无任务</div>
   </section>
 
-  <!-- 保存按钮 -->
-  <div class="flex justify-end">
-    <button id="saveBtn" class="btn-primary px-6">保存全部配置</button>
+  <!-- 保存栏 -->
+  <div id="saveBar" class="sticky bottom-3 z-20">
+    <div class="card py-3 px-4 flex items-center justify-between gap-3 border-teal-100 bg-white/95">
+      <p class="text-xs text-slate-500">修改配置后请保存，发布会按最新保存值执行。</p>
+      <button id="saveBtn" class="btn-primary px-6">保存全部配置</button>
+    </div>
   </div>
 
 </main>
@@ -213,6 +267,7 @@ const senderSection   = $<HTMLElement>('senderSection');
 const receiverSection = $<HTMLElement>('receiverSection');
 const receiverTasksSection = $<HTMLElement>('receiverTasksSection');
 const projectsWrap    = $<HTMLDivElement>('projectsWrap');
+const bothModeSwitcher = $<HTMLElement>('bothModeSwitcher');
 
 // ─── 模式显示控制 ─────────────────────────────────────────────────────────────
 
@@ -229,11 +284,14 @@ const setModeRadio = (mode: AppMode): void => {
 };
 
 const applyModeVisibility = (mode: AppMode): void => {
-  const showSender   = mode === 'sender'   || mode === 'both';
-  const showReceiver = mode === 'receiver' || mode === 'both';
+  const showSender = mode === 'sender' || (mode === 'both' && bothModeFocus === 'sender');
+  const showReceiver = mode === 'receiver' || (mode === 'both' && bothModeFocus === 'receiver');
+  bothModeSwitcher.classList.toggle('hidden', mode !== 'both');
   senderSection.classList.toggle('hidden', !showSender);
   receiverSection.classList.toggle('hidden', !showReceiver);
   receiverTasksSection.classList.toggle('hidden', !showReceiver);
+  updateFocusButtons();
+  updateOverview();
 };
 
 // ─── 接收端状态指示 ──────────────────────────────────────────────────────────
@@ -250,6 +308,33 @@ const updateReceiverStatusUI = (status: ReceiverRuntimeStatus): void => {
     text.textContent = '服务未启动';
     text.className = 'text-sm text-slate-500';
   }
+  updateOverview(status.running ? `运行中 ${status.host}:${status.port}` : '未启动');
+};
+
+const modeText = (mode: AppMode): string => {
+  if (mode === 'sender') return '发送端';
+  if (mode === 'receiver') return '接收端';
+  return `双模式（当前聚焦: ${bothModeFocus === 'sender' ? '发送端' : '接收端'}）`;
+};
+
+const updateOverview = (receiverTextOverride?: string): void => {
+  const modeEl = $<HTMLParagraphElement>('overviewMode');
+  const countEl = $<HTMLParagraphElement>('overviewProjectCount');
+  const receiverEl = $<HTMLParagraphElement>('overviewReceiverStatus');
+  if (modeEl) modeEl.textContent = modeText(getModeRadio());
+  if (countEl) countEl.textContent = String(config?.senderProjects?.length ?? 0);
+  if (receiverEl) {
+    receiverEl.textContent = receiverTextOverride
+      ?? ($<HTMLSpanElement>('receiverStatusText')?.textContent?.trim() || '未知');
+  }
+};
+
+const updateFocusButtons = (): void => {
+  const senderBtn = $<HTMLButtonElement>('focusSenderBtn');
+  const receiverBtn = $<HTMLButtonElement>('focusReceiverBtn');
+  if (!senderBtn || !receiverBtn) return;
+  senderBtn.className = `${bothModeFocus === 'sender' ? 'btn-focus-active' : 'btn-focus-idle'} px-3 py-1.5 text-xs font-semibold rounded-lg`;
+  receiverBtn.className = `${bothModeFocus === 'receiver' ? 'btn-focus-active' : 'btn-focus-idle'} px-3 py-1.5 text-xs font-semibold rounded-lg`;
 };
 
 // ─── 接收端任务列表 ───────────────────────────────────────────────────────────
@@ -266,6 +351,20 @@ const statusBadge = (status: string): string => {
 
 const renderReceiverTasks = (tasks: DeploymentTask[]): void => {
   const wrap = $<HTMLDivElement>('receiverTasksWrap');
+
+  // 轮询重绘前先记住当前展开状态和滚动位置
+  wrap.querySelectorAll<HTMLDetailsElement>('details[data-log-details="1"][data-id]').forEach((el) => {
+    const id = el.dataset.id;
+    if (!id) return;
+    if (el.open) receiverLogExpandedSet.add(id);
+    else receiverLogExpandedSet.delete(id);
+  });
+  wrap.querySelectorAll<HTMLPreElement>('pre[data-log-pre="1"][data-id]').forEach((el) => {
+    const id = el.dataset.id;
+    if (!id) return;
+    receiverLogScrollMap.set(id, el.scrollTop);
+  });
+
   if (tasks.length === 0) {
     wrap.innerHTML = '<p class="text-sm text-slate-400 italic">暂无任务</p>';
     return;
@@ -283,8 +382,26 @@ const renderReceiverTasks = (tasks: DeploymentTask[]): void => {
                   🔗 ${esc(t.url)}
                  </a>` : ''}
       ${t.error ? `<p class="text-xs text-rose-600 break-all">${esc(t.error.slice(0, 300))}</p>` : ''}
+      ${t.logs ? `
+        <details class="mt-1 rounded-lg border border-slate-200 bg-white/70 px-2.5 py-2"
+                 data-log-details="1" data-id="${esc(t.id)}" ${receiverLogExpandedSet.has(t.id) ? 'open' : ''}>
+          <summary class="cursor-pointer text-xs font-medium text-slate-600"
+                   data-log-summary="1" data-id="${esc(t.id)}">查看日志</summary>
+          <pre class="mt-2 max-h-52 overflow-y-auto rounded-lg bg-slate-900 p-2.5
+                      text-[11px] leading-relaxed text-slate-100 whitespace-pre-wrap break-all"
+               data-log-pre="1" data-id="${esc(t.id)}">${esc(t.logs)}</pre>
+        </details>
+      ` : ''}
     </div>
   `).join('');
+
+  // 重绘后恢复滚动位置
+  tasks.forEach((task) => {
+    const pre = wrap.querySelector<HTMLPreElement>(`pre[data-log-pre="1"][data-id="${task.id}"]`);
+    if (!pre) return;
+    const top = receiverLogScrollMap.get(task.id);
+    if (typeof top === 'number') pre.scrollTop = top;
+  });
 };
 
 // ─── 部署进度步骤 ─────────────────────────────────────────────────────────────
@@ -373,6 +490,11 @@ const renderProjectCard = (project: SenderProject): HTMLElement => {
         <button class="btn-danger btn-sm" data-action="remove" data-id="${project.id}" ${busy ? 'disabled' : ''}>删除</button>
       </div>
     </div>
+    <div class="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+      <span>路径: <span class="font-medium text-slate-700">${esc(project.projectPath || '-')}</span></span>
+      <span>分支: <span class="font-medium text-slate-700">${esc(project.gitBranch || '-')}</span></span>
+      <span>Pages: <span class="font-medium text-slate-700">${esc(project.pagesProjectName || '-')}</span></span>
+    </div>
 
     ${mismatch ? `
     <div class="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
@@ -407,7 +529,7 @@ const renderProjectCard = (project: SenderProject): HTMLElement => {
     <!-- ── 本地构建配置 ── -->
     <div class="rounded-xl border border-slate-100 bg-slate-50/60 p-4">
       <h3 class="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wide">本地构建</h3>
-      <div class="grid grid-cols-2 gap-x-5 gap-y-3">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3">
         <div>
           <label class="form-label">项目名称</label>
           <input id="${projectInputId(project.id, 'name')}" class="form-input" value="${esc(project.name)}" />
@@ -448,7 +570,7 @@ const renderProjectCard = (project: SenderProject): HTMLElement => {
     <!-- ── 远程发布配置 ── -->
     <div class="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
       <h3 class="text-xs font-semibold text-blue-500 mb-3 uppercase tracking-wide">远程发布</h3>
-      <div class="grid grid-cols-2 gap-x-5 gap-y-3">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3">
         <div>
           <label class="form-label">接收端地址</label>
           <input id="${projectInputId(project.id, 'receiverBaseUrl')}" class="form-input" value="${esc(project.receiverBaseUrl)}" />
@@ -462,11 +584,17 @@ const renderProjectCard = (project: SenderProject): HTMLElement => {
           <input id="${projectInputId(project.id, 'pagesProjectName')}" class="form-input" value="${esc(project.pagesProjectName)}"
                  placeholder="在 Cloudflare Pages 控制台可以找到" />
         </div>
-        <div>
-          <label class="form-label">部署分支（Cloudflare Pages）</label>
-          <input id="${projectInputId(project.id, 'deployBranch')}" class="form-input" value="${esc(project.deployBranch)}" />
-        </div>
       </div>
+      <details class="mt-3 rounded-xl border border-blue-200 bg-white/70 px-3 py-2">
+        <summary class="cursor-pointer text-xs font-medium text-blue-700">高级配置（可选）</summary>
+        <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3">
+          <div>
+            <label class="form-label">部署分支（默认 main）</label>
+            <input id="${projectInputId(project.id, 'deployBranch')}" class="form-input"
+                   value="${esc(project.deployBranch)}" placeholder="main" />
+          </div>
+        </div>
+      </details>
     </div>
   `;
   return el;
@@ -475,6 +603,7 @@ const renderProjectCard = (project: SenderProject): HTMLElement => {
 const renderProjectCards = (): void => {
   projectsWrap.innerHTML = '';
   config.senderProjects.forEach(p => projectsWrap.appendChild(renderProjectCard(p)));
+  updateOverview();
 };
 
 // ─── 配置收集 ─────────────────────────────────────────────────────────────────
@@ -891,12 +1020,46 @@ const bindProjectEvents = (): void => {
   });
 };
 
+const bindReceiverTaskEvents = (): void => {
+  const wrap = $<HTMLDivElement>('receiverTasksWrap');
+  if (!wrap) return;
+
+  wrap.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const summary = target.closest<HTMLElement>('summary[data-log-summary="1"]');
+    if (!summary) return;
+    const taskId = summary.dataset.id;
+    if (!taskId) return;
+
+    // details 的 open 状态在 click 之后才切换，这里放到下一帧读取。
+    setTimeout(() => {
+      const details = wrap.querySelector<HTMLDetailsElement>(`details[data-log-details="1"][data-id="${taskId}"]`);
+      if (!details) return;
+      if (details.open) receiverLogExpandedSet.add(taskId);
+      else receiverLogExpandedSet.delete(taskId);
+    }, 0);
+  });
+};
+
 // ─── 全局按钮绑定 ─────────────────────────────────────────────────────────────
 
 const bindGlobalEvents = (): void => {
   // 模式切换
   document.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach(r => {
-    r.addEventListener('change', () => applyModeVisibility(getModeRadio()));
+    r.addEventListener('change', () => {
+      applyModeVisibility(getModeRadio());
+      updateOverview();
+    });
+  });
+
+  // 双模式下发送端/接收端焦点切换
+  $('focusSenderBtn')?.addEventListener('click', () => {
+    bothModeFocus = 'sender';
+    applyModeVisibility(getModeRadio());
+  });
+  $('focusReceiverBtn')?.addEventListener('click', () => {
+    bothModeFocus = 'receiver';
+    applyModeVisibility(getModeRadio());
   });
 
   // 新增项目
@@ -1005,6 +1168,7 @@ const init = async (): Promise<void> => {
   await preloadAllBranches();
   renderProjectCards();
   bindProjectEvents();
+  bindReceiverTaskEvents();
   bindGlobalEvents();
 
   const configPath = await window.desktopApi.getConfigPath();

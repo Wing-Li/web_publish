@@ -16,6 +16,8 @@ if (started) {
   app.quit();
 }
 
+app.setName('便捷打包工具');
+
 const configStore = new ConfigStore();
 let config: AppConfig;
 let receiverServer: ReceiverServer;

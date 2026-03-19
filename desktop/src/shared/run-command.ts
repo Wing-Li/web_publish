@@ -19,6 +19,14 @@ export const runCommand = (
     });
 
     let output = '';
+    let settled = false;
+
+    const finalize = (code: number, extra?: string): void => {
+      if (settled) return;
+      settled = true;
+      const merged = extra ? `${output}${extra}` : output;
+      resolve({ code, output: merged });
+    };
 
     child.stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
@@ -32,8 +40,12 @@ export const runCommand = (
       onData?.(text);
     });
 
+    child.on('error', (err: Error) => {
+      finalize(1, `${err.message}\n`);
+    });
+
     child.on('close', (code) => {
-      resolve({ code: code ?? 1, output });
+      finalize(code ?? 1);
     });
   });
 

@@ -30,6 +30,12 @@
   .btn-sm {
     @apply px-2.5 py-1 text-xs rounded-md;
   }
+  .btn-focus-active {
+    @apply bg-teal-700 text-white shadow-sm;
+  }
+  .btn-focus-idle {
+    @apply bg-transparent text-slate-500 hover:bg-white hover:text-slate-700;
+  }
 
   /* ── 卡片 ── */
   .card {
@@ -113,3 +119,10 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 .fade-up { animation: fade-up 280ms ease-out both; }
+
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}

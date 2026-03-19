@@ -11,6 +11,7 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     name: '便捷打包工具',
+    icon: './build/icon',
   },
   rebuildConfig: {},
   makers: [

@@ -12,6 +12,18 @@ interface DeploymentMetadata {
   commitSha?: string;
 }
 
+interface DeployAttemptResult {
+  ok: boolean;
+  url?: string;
+  error?: string;
+}
+
+interface WranglerLauncher {
+  command: string;
+  baseArgs: string[];
+  label: string;
+}
+
 const json = (res: ServerResponse, code: number, payload: unknown): void => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
@@ -21,6 +33,64 @@ const ensureDir = (dir: string): void => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+};
+
+const buildWranglerEnv = (cfg: ReceiverConfig): NodeJS.ProcessEnv => ({
+  CLOUDFLARE_API_TOKEN: cfg.cloudflareApiToken,
+  CLOUDFLARE_ACCOUNT_ID: cfg.cloudflareAccountId,
+  CI: '1',
+  WRANGLER_SEND_METRICS: 'false',
+  NO_COLOR: '1',
+});
+
+const buildDeployErrorHint = (raw: string): string => {
+  const output = raw.toLowerCase();
+
+  if (output.includes('command not found') || output.includes('enoent')) {
+    return '未找到 wrangler 命令，请在接收端安装 Wrangler CLI，或修改 wranglerBin。';
+  }
+  if (output.includes('authentication') || output.includes('unauthorized') || output.includes('forbidden')) {
+    return 'Cloudflare 鉴权失败，请检查 API Token 权限和 Account ID。';
+  }
+  if (output.includes('project') && output.includes('not found')) {
+    return 'Pages 项目不存在，请先在 Cloudflare 创建 Direct Upload 项目，或检查项目名。';
+  }
+  if (output.includes('branch')) {
+    return '分支参数异常，请检查 deployBranch 配置是否有效。';
+  }
+  if (output.includes('too large') || output.includes('file size')) {
+    return '静态资源文件大小超出限制，请压缩或拆分过大文件后再部署。';
+  }
+
+  return 'wrangler pages deploy 执行失败，请查看完整日志定位问题。';
+};
+
+const isProjectAlreadyExists = (raw: string): boolean => {
+  const output = raw.toLowerCase();
+  return output.includes('already exists') || output.includes('project already exists');
+};
+
+const parseCommandLine = (raw: string): { command: string; baseArgs: string[] } | null => {
+  const text = raw.trim();
+  if (!text) return null;
+  const parts = text.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return null;
+  return {
+    command: parts[0],
+    baseArgs: parts.slice(1),
+  };
+};
+
+const uniqueLaunchers = (items: WranglerLauncher[]): WranglerLauncher[] => {
+  const seen = new Set<string>();
+  const result: WranglerLauncher[] = [];
+  for (const item of items) {
+    const key = `${item.command}::${item.baseArgs.join(' ')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
 };
 
 /**
@@ -114,6 +184,8 @@ export class ReceiverServer {
   private readonly tasks = new Map<string, DeploymentTask>();
 
   private queue: Promise<void> = Promise.resolve();
+
+  private static readonly TASK_LOG_MAX_CHARS = 300 * 1024;
 
   constructor(private readonly getConfig: () => ReceiverConfig) {}
 
@@ -244,10 +316,22 @@ export class ReceiverServer {
 
         task.status = 'running';
         task.startedAt = new Date().toISOString();
+        task.logs = '';
+
+        const appendTaskLog = (chunk: string): void => {
+          const current = task.logs ?? '';
+          let next = current + chunk;
+          if (next.length > ReceiverServer.TASK_LOG_MAX_CHARS) {
+            next = next.slice(next.length - ReceiverServer.TASK_LOG_MAX_CHARS);
+          }
+          task.logs = next;
+        };
 
         // zip slip 安全检查
         try {
+          appendTaskLog('[zip precheck] unzip -l artifact.zip\n');
           await checkZipSlip(zipPath, extractPath);
+          appendTaskLog('[zip precheck] ok\n');
         } catch (err) {
           task.status = 'failed';
           task.error = (err as Error).message;
@@ -259,6 +343,8 @@ export class ReceiverServer {
           'unzip',
           ['-o', zipPath, '-d', extractPath],
           extractPath,
+          undefined,
+          (chunk) => appendTaskLog(chunk),
         );
 
         if (unzipResult.code !== 0) {
@@ -269,37 +355,22 @@ export class ReceiverServer {
         }
 
         const cfg = this.getConfig();
-        const deployResult = await runCommand(
-          cfg.wranglerBin,
-          [
-            'pages',
-            'deploy',
-            extractPath,
-            '--project-name',
-            metadata.projectName,
-            '--branch',
-            metadata.branch,
-          ],
+        const deployAttempt = await this.deployToCloudflare(
+          cfg,
           extractPath,
-          {
-            CLOUDFLARE_API_TOKEN: cfg.cloudflareApiToken,
-            CLOUDFLARE_ACCOUNT_ID: cfg.cloudflareAccountId,
-          },
+          metadata,
+          appendTaskLog,
         );
 
-        task.logs = deployResult.output;
-
-        const urlMatch = deployResult.output.match(/https?:\/\/[^\s]+pages\.dev[^\s]*/);
-
-        if (deployResult.code === 0) {
+        if (deployAttempt.ok) {
           task.status = 'success';
-          task.url = urlMatch?.[0] ?? '';
+          task.url = deployAttempt.url ?? '';
           task.finishedAt = new Date().toISOString();
           return;
         }
 
         task.status = 'failed';
-        task.error = deployResult.output;
+        task.error = deployAttempt.error ?? '部署失败';
         task.finishedAt = new Date().toISOString();
       })
       .catch((err: Error) => {
@@ -372,5 +443,119 @@ export class ReceiverServer {
     this.enqueueProcess(deploymentId, zipPath, extractPath, metadata);
 
     json(res, 200, { deploymentId, status: 'queued' });
+  }
+
+  private async deployToCloudflare(
+    cfg: ReceiverConfig,
+    extractPath: string,
+    metadata: DeploymentMetadata,
+    onLog: (chunk: string) => void,
+  ): Promise<DeployAttemptResult> {
+    if (!cfg.cloudflareApiToken.trim()) {
+      return { ok: false, error: '未配置 Cloudflare API Token' };
+    }
+    if (!cfg.cloudflareAccountId.trim()) {
+      return { ok: false, error: '未配置 Cloudflare Account ID' };
+    }
+    if (!cfg.wranglerBin.trim()) {
+      return { ok: false, error: '未配置 wranglerBin' };
+    }
+
+    const wranglerEnv = buildWranglerEnv(cfg);
+
+    const configured = parseCommandLine(cfg.wranglerBin);
+    const candidates = uniqueLaunchers([
+      ...(configured ? [{
+        command: configured.command,
+        baseArgs: configured.baseArgs,
+        label: `配置命令: ${cfg.wranglerBin.trim()}`,
+      }] : []),
+      { command: 'wrangler', baseArgs: [], label: '系统命令 wrangler' },
+      { command: 'npx', baseArgs: ['-y', 'wrangler'], label: 'npx -y wrangler' },
+      { command: 'pnpm', baseArgs: ['dlx', 'wrangler'], label: 'pnpm dlx wrangler' },
+    ]);
+
+    const runWithLauncher = async (
+      launcher: WranglerLauncher,
+      args: string[],
+      title: string,
+    ) => {
+      onLog(`[${launcher.label}] ${title}\n`);
+      const result = await runCommand(
+        launcher.command,
+        [...launcher.baseArgs, ...args],
+        extractPath,
+        wranglerEnv,
+        (chunk) => onLog(chunk),
+      );
+      onLog('\n');
+      return result;
+    };
+
+    let selectedLauncher: WranglerLauncher | null = null;
+    for (const launcher of candidates) {
+      const versionResult = await runWithLauncher(launcher, ['--version'], 'version check');
+      if (versionResult.code === 0) {
+        selectedLauncher = launcher;
+        break;
+      }
+    }
+
+    if (!selectedLauncher) {
+      return {
+        ok: false,
+        error: 'Wrangler 不可用：已尝试 wrangler / npx -y wrangler / pnpm dlx wrangler',
+      };
+    }
+
+    const createArgs = [
+      'pages',
+      'project',
+      'create',
+      metadata.projectName,
+      '--production-branch',
+      metadata.branch,
+    ];
+    const createResult = await runWithLauncher(
+      selectedLauncher,
+      createArgs,
+      `project create ${metadata.projectName}`,
+    );
+    if (createResult.code !== 0 && !isProjectAlreadyExists(createResult.output)) {
+      return {
+        ok: false,
+        error: `创建 Pages 项目失败: ${createResult.output}`.trim(),
+      };
+    }
+
+    const deployArgs = [
+      'pages',
+      'deploy',
+      extractPath,
+      '--project-name',
+      metadata.projectName,
+      '--branch',
+      metadata.branch,
+    ];
+
+    const deployResult = await runWithLauncher(
+      selectedLauncher,
+      deployArgs,
+      `pages deploy ${metadata.projectName}`,
+    );
+
+    const urlMatch = deployResult.output.match(/https?:\/\/[^\s]+pages\.dev[^\s]*/);
+    if (deployResult.code === 0) {
+      return {
+        ok: true,
+        url: urlMatch?.[0],
+      };
+    }
+
+    const hint = buildDeployErrorHint(deployResult.output);
+    return {
+      ok: false,
+      error: `${hint}\n\n${deployResult.output}`.trim(),
+    };
   }
 }
