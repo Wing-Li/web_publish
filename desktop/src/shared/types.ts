@@ -88,3 +88,6 @@ export interface DeployStepState {
   label: string;
   status: 'pending' | 'running' | 'done' | 'failed';
 }
+
+/** 部署步骤状态（供 UI 组件与渲染层复用） */
+export type StepStatus = DeployStepState['status'];
