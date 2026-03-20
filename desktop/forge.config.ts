@@ -10,8 +10,16 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    name: '便捷打包工具',
+    name: 'QuickPackTool',
+    executableName: 'QuickPackTool',
+    appBundleId: 'com.wingli.webpublish.desktop',
     icon: './build/icon',
+    osxSign: {},
+    extendInfo: {
+      CFBundleDisplayName: '便捷打包工具',
+      CFBundleName: '便捷打包工具',
+      CFBundleIdentifier: 'com.wingli.webpublish.desktop',
+    },
   },
   rebuildConfig: {},
   makers: [

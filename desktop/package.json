@@ -1,6 +1,6 @@
 {
   "name": "desktop",
-  "productName": "便捷打包工具",
+  "productName": "QuickPackTool",
   "displayName": "便捷打包工具",
   "version": "1.0.0",
   "description": "My Electron application description",
@@ -10,7 +10,7 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",
-    "make:mac:m": "NODE_TLS_REJECT_UNAUTHORIZED=0 electron-forge make --platform=darwin --arch=arm64",
+    "make:mac:m": "bash ./scripts/make-mac-arm64.sh",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx ."
   },
