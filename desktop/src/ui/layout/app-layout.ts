@@ -94,8 +94,8 @@ export const appLayoutTemplate = `
 
       <div class="flex items-center gap-4">
         <div class="flex -space-x-2">
-           <div class="w-8 h-8 rounded-full bg-teal-100 border-2 border-white flex items-center justify-center text-teal-700 text-[10px] font-bold">发</div>
-           <div class="w-8 h-8 rounded-full bg-blue-100 border-2 border-white flex items-center justify-center text-blue-700 text-[10px] font-bold">接</div>
+           <div class="w-8 h-8 rounded-full bg-teal-100 border-2 border-white flex items-center justify-center text-teal-700 text-[10px] font-bold">便捷</div>
+           <div class="w-8 h-8 rounded-full bg-blue-100 border-2 border-white flex items-center justify-center text-blue-700 text-[10px] font-bold">打包</div>
         </div>
       </div>
     </header>
