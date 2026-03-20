@@ -23,6 +23,7 @@ const COMMON_PATH_ENTRIES = [
   '/sbin',
 ];
 let cachedShellPath = '';
+let cachedInteractiveShellPath = '';
 
 const mergePath = (...paths: Array<string | undefined>): string => {
   const seen = new Set<string>();
@@ -54,9 +55,25 @@ const getLoginShellPath = async (cwd: string): Promise<string> => {
   return cachedShellPath;
 };
 
+const getInteractiveShellPath = async (cwd: string): Promise<string> => {
+  if (cachedInteractiveShellPath) return cachedInteractiveShellPath;
+  const shell = process.env.SHELL || '/bin/zsh';
+  const pathResult = await runCommand(
+    shell,
+    ['-lic', 'printf %s "$PATH"'],
+    cwd,
+  );
+  if (pathResult.code === 0) {
+    cachedInteractiveShellPath = pathResult.output.trim();
+  }
+  return cachedInteractiveShellPath;
+};
+
 const getBuildEnv = async (cwd: string): Promise<NodeJS.ProcessEnv> => {
   const shellPath = await getLoginShellPath(cwd);
+  const interactiveShellPath = await getInteractiveShellPath(cwd);
   const pathValue = mergePath(
+    interactiveShellPath,
     shellPath,
     process.env.PATH,
     COMMON_PATH_ENTRIES.join(':'),
@@ -94,6 +111,16 @@ const validateProjectBeforeBuild = async (
   log: LogFn,
 ): Promise<void> => {
   ensure(Boolean(project.projectPath), '项目路径不能为空');
+  if (process.platform === 'darwin') {
+    try {
+      fs.accessSync(project.projectPath, fs.constants.R_OK | fs.constants.X_OK);
+    } catch {
+      throw new Error(
+        `[MAC_PERMISSION_REQUIRED] 无法访问项目目录: ${project.projectPath}\n` +
+        'macOS 可能尚未授予此应用访问“文稿/桌面/下载”等目录的权限。',
+      );
+    }
+  }
 
   log('▶ 检查 Git 分支…');
   const gitCheck = await runCommand(

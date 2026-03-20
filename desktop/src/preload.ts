@@ -45,6 +45,8 @@ const api = {
 
   openFolder: (folderPath: string): Promise<void> =>
     ipcRenderer.invoke('app:open-folder', folderPath),
+  requestMacOsFolderPermissionHelp: (folderPath?: string): Promise<boolean> =>
+    ipcRenderer.invoke('app:request-macos-folder-permission-help', folderPath),
 
   buildAndDeployOne: (projectId: string): Promise<BuildAndDeployResult> =>
     ipcRenderer.invoke('sender:build-deploy-one', projectId),

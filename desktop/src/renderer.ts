@@ -487,11 +487,21 @@ const extractBranchMismatch = (message: string): string | null => {
   return m?.[1]?.trim() ?? null;
 };
 
+const extractPermissionPath = (message: string): string => {
+  const m = message.match(/无法访问项目目录:\s*(.+)/);
+  return m?.[1]?.trim() ?? '';
+};
+
 const handleError = (err: unknown, projectId?: string): void => {
-  const msg = err instanceof Error ? err.message : String(err);
+  const rawMsg = err instanceof Error ? err.message : String(err);
+  const msg = rawMsg.replace('[MAC_PERMISSION_REQUIRED]', '').trim();
   showToast(msg, 'error');
+  if (rawMsg.includes('[MAC_PERMISSION_REQUIRED]')) {
+    const path = extractPermissionPath(rawMsg);
+    void window.desktopApi.requestMacOsFolderPermissionHelp(path);
+  }
   if (projectId) {
-    const current = extractBranchMismatch(msg);
+    const current = extractBranchMismatch(rawMsg);
     if (current) {
       const rt = branchRuntimeMap.get(projectId) ?? { branches: [], current: '' };
       branchRuntimeMap.set(projectId, { ...rt, current });

@@ -68,6 +68,25 @@ const registerIpcHandlers = (): void => {
     shell.openPath(folderPath);
   });
 
+  ipcMain.handle('app:request-macos-folder-permission-help', async (_, folderPath?: string) => {
+    if (process.platform !== 'darwin') return false;
+    const result = await dialog.showMessageBox({
+      type: 'warning',
+      buttons: ['打开系统设置', '稍后处理'],
+      defaultId: 0,
+      cancelId: 1,
+      title: '需要文件夹访问权限',
+      message: '当前目录访问被 macOS 拒绝，无法继续构建。',
+      detail: `请在“系统设置 -> 隐私与安全性 -> 文件与文件夹”中，允许“便捷打包工具”访问目标目录。\n${folderPath ? `目录：${folderPath}` : ''}`,
+      noLink: true,
+    });
+    if (result.response === 0) {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders');
+      return true;
+    }
+    return false;
+  });
+
   ipcMain.handle('app:list-git-branches', async (_, projectPath: string) => {
     if (!projectPath) {
       return { branches: [], current: '' };
