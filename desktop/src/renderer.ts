@@ -607,6 +607,7 @@ const bindEvents = (): void => {
 
     // Sender Global Actions
     if (target.id === 'addProjectBtn') {
+      config = collectConfig();
       config.senderProjects.push(newProjectTemplate());
       renderProjectCards();
       showToast('已添加新项目，请配置后保存', 'info');
@@ -657,6 +658,8 @@ const bindEvents = (): void => {
     if (!btn) return;
     const { action, id: projectId } = btn.dataset;
     if (!action || !projectId) return;
+    // 任何会触发局部重绘的项目卡操作，先把当前输入草稿同步到内存，避免未保存输入被覆盖
+    config = collectConfig();
 
     if (action === 'clear-log') { clearLog(projectId); return; }
     if (action === 'remove') {

@@ -175,7 +175,12 @@ export const createProjectCard = (
           </h4>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6 bg-slate-50/50 p-5 rounded-2xl border border-slate-100">
             <div class="flex flex-col gap-1.5">
-              <label class="text-[11px] font-black text-slate-400 uppercase tracking-wider pl-1">项目名称</label>
+              <label class="text-[11px] font-black text-slate-400 uppercase tracking-wider pl-1">
+                项目名称
+                <span class="ml-1 font-medium normal-case tracking-normal text-[10px] text-slate-400">
+                  （将作为打包结果前缀，例如：my_site_0320_153045.zip）
+                </span>
+              </label>
               <input id="${projectInputId(project.id, 'name')}" class="form-input-new font-bold text-slate-700" value="${esc(project.name)}" placeholder="例如：我的博客项目" />
             </div>
             <div class="flex flex-col gap-1.5">
