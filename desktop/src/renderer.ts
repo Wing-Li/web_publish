@@ -441,8 +441,9 @@ const setBusy = (projectId: string, busy: boolean): void => {
   card.querySelectorAll<HTMLButtonElement>('button[data-id]').forEach(btn => {
     btn.disabled = busy;
   });
-  // Update the button icon/spinner by re-rendering part of the header or just the button
-  // For simplicity, we just trigger a full card update if needed, but here we just toggle disabled
+  // 某些错误分支会在 busy=true 时触发整卡重绘，导致按钮保留 loading 样式。
+  // busy 结束后统一重绘，确保 spinner 与 disabled 状态完全回收。
+  if (!busy) renderProjectCards();
 };
 
 const setGlobalBusy = (busy: boolean): void => {
@@ -703,12 +704,19 @@ const bindEvents = (): void => {
       try {
         config = await window.desktopApi.updateConfig(collectConfig());
         setBusy(projectId, true);
+        appendLog(projectId, '\n━━ 分支同步 ━━\n');
+        appendLog(projectId, '▶ 开始执行：切换并同步分支...\n');
         const res = await window.desktopApi.switchBranchAndPull(projectId);
         const rt = branchRuntimeMap.get(projectId) ?? { branches: [], current: '' };
         branchRuntimeMap.set(projectId, { ...rt, current: res.currentBranch, error: undefined });
+        appendLog(projectId, `✓ 已切换到分支 ${res.currentBranch}，并完成同步\n`);
         renderProjectCards();
         showToast(`已成功切换到 ${res.currentBranch}`, 'success');
-      } catch (err) { handleError(err, projectId); }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendLog(projectId, `✗ 切换并同步失败: ${msg}\n`);
+        handleError(err, projectId);
+      }
       finally { setBusy(projectId, false); }
       return;
     }
