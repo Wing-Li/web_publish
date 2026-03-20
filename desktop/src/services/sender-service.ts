@@ -14,6 +14,55 @@ type LogFn = (msg: string) => void;
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const noop: LogFn = (_msg: string) => { /* default no-op */ };
+const COMMON_PATH_ENTRIES = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+];
+let cachedShellPath = '';
+
+const mergePath = (...paths: Array<string | undefined>): string => {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  paths
+    .filter(Boolean)
+    .flatMap((value) => (value as string).split(':'))
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .forEach((entry) => {
+      if (seen.has(entry)) return;
+      seen.add(entry);
+      merged.push(entry);
+    });
+  return merged.join(':');
+};
+
+const getLoginShellPath = async (cwd: string): Promise<string> => {
+  if (cachedShellPath) return cachedShellPath;
+  const shell = process.env.SHELL || '/bin/zsh';
+  const pathResult = await runCommand(
+    shell,
+    ['-lc', 'printf %s "$PATH"'],
+    cwd,
+  );
+  if (pathResult.code === 0) {
+    cachedShellPath = pathResult.output.trim();
+  }
+  return cachedShellPath;
+};
+
+const getBuildEnv = async (cwd: string): Promise<NodeJS.ProcessEnv> => {
+  const shellPath = await getLoginShellPath(cwd);
+  const pathValue = mergePath(
+    shellPath,
+    process.env.PATH,
+    COMMON_PATH_ENTRIES.join(':'),
+  );
+  return { ...process.env, PATH: pathValue };
+};
 
 const sha256File = (filePath: string): string => {
   const content = fs.readFileSync(filePath);
@@ -74,6 +123,7 @@ const buildProjectArtifact = async (
   await validateProjectBeforeBuild(project, log);
 
   log(`▶ 执行构建命令: ${project.buildCommand}`);
+  const buildEnv = await getBuildEnv(project.projectPath);
 
   // 用 env -u 在命令层做环境隔离，避免 Electron/IDE 注入变量污染构建
   const sanitizedBuild = await runCommand(
@@ -93,11 +143,21 @@ const buildProjectArtifact = async (
       project.buildCommand,
     ],
     project.projectPath,
-    process.env,
+    buildEnv,
     (chunk) => log(chunk),
   );
 
   if (sanitizedBuild.code !== 0) {
+    if (
+      /command not found|No such file or directory/i.test(sanitizedBuild.output) &&
+      /(npm|pnpm|yarn|node)/i.test(sanitizedBuild.output)
+    ) {
+      throw new Error(
+        `构建失败：未找到 Node.js 或包管理器命令。\n` +
+        `请确认已安装 Node.js，并且在终端执行 node/npm/pnpm 可用。\n` +
+        `原始输出:\n${sanitizedBuild.output}`,
+      );
+    }
     throw new Error(`构建失败 (exit ${sanitizedBuild.code})`);
   }
   log('✓ 构建完成');
