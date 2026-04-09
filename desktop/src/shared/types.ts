@@ -57,6 +57,33 @@ export interface BuildAndDeployResult {
   deploymentId: string;
 }
 
+export interface UploadInitRequest {
+  uploadKey: string;
+  projectName: string;
+  branch: string;
+  fileName: string;
+  fileSize: number;
+  fileSha256: string;
+  chunkSize: number;
+  chunkCount: number;
+}
+
+export interface UploadInitResponse {
+  uploadId: string;
+}
+
+export interface UploadStatusResponse {
+  uploadId: string;
+  chunkCount: number;
+  uploadedIndexes: number[];
+  completed: boolean;
+}
+
+export interface UploadCompleteResponse {
+  deploymentId: string;
+  status: 'queued';
+}
+
 export interface BuildLocalResult {
   projectId: string;
   artifactPath: string;

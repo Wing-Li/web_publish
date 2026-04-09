@@ -3,7 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { DeploymentTask, ReceiverConfig } from '../shared/types';
+import {
+  DeploymentTask,
+  ReceiverConfig,
+  UploadCompleteResponse,
+  UploadInitRequest,
+  UploadInitResponse,
+  UploadStatusResponse,
+} from '../shared/types';
 import { runCommand } from '../shared/run-command';
 
 interface DeploymentMetadata {
@@ -24,6 +31,21 @@ interface WranglerLauncher {
   label: string;
 }
 
+interface UploadSessionMeta {
+  uploadId: string;
+  uploadKey: string;
+  fileName: string;
+  fileSize: number;
+  fileSha256: string;
+  chunkSize: number;
+  chunkCount: number;
+  metadata: DeploymentMetadata;
+  completed: boolean;
+  deploymentId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 const json = (res: ServerResponse, code: number, payload: unknown): void => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
@@ -33,6 +55,34 @@ const ensureDir = (dir: string): void => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+};
+
+const readBodyAsJson = async <T>(req: IncomingMessage, maxBytes = 1024 * 1024): Promise<T> => {
+  const chunks: Buffer[] = [];
+  let size = 0;
+
+  return new Promise((resolve, reject) => {
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        req.destroy();
+        reject(new Error('PAYLOAD_TOO_LARGE'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      try {
+        const body = Buffer.concat(chunks).toString('utf-8');
+        resolve(JSON.parse(body) as T);
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    req.on('error', reject);
+  });
 };
 
 const buildWranglerEnv = (cfg: ReceiverConfig): NodeJS.ProcessEnv => ({
@@ -178,6 +228,76 @@ const checkZipSlip = async (
   }
 };
 
+const readMeta = (metaPath: string): UploadSessionMeta => {
+  return JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as UploadSessionMeta;
+};
+
+const writeMeta = (metaPath: string, meta: UploadSessionMeta): void => {
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+};
+
+const formatChunkFileName = (index: number): string => `${String(index).padStart(6, '0')}.part`;
+
+const collectUploadedIndexes = (chunksDir: string): number[] => {
+  if (!fs.existsSync(chunksDir)) return [];
+  return fs.readdirSync(chunksDir)
+    .map((name) => name.match(/^(\d+)\.part$/)?.[1] ?? '')
+    .filter(Boolean)
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value))
+    .sort((a, b) => a - b);
+};
+
+const mergeChunksToZip = async (
+  chunksDir: string,
+  chunkCount: number,
+  targetZipPath: string,
+): Promise<{ sha256: string; size: number }> =>
+  new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const output = fs.createWriteStream(targetZipPath);
+    let size = 0;
+    let index = 0;
+
+    const abort = (err: Error): void => {
+      output.destroy();
+      try {
+        fs.unlinkSync(targetZipPath);
+      } catch {
+        // ignore cleanup failure
+      }
+      reject(err);
+    };
+
+    const pipeNext = (): void => {
+      if (index >= chunkCount) {
+        output.end(() => resolve({ sha256: hash.digest('hex'), size }));
+        return;
+      }
+
+      const partPath = path.join(chunksDir, formatChunkFileName(index));
+      if (!fs.existsSync(partPath)) {
+        abort(new Error(`缺少分片: ${index}`));
+        return;
+      }
+
+      const input = fs.createReadStream(partPath);
+      input.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        hash.update(chunk);
+      });
+      input.on('error', (err) => abort(err as Error));
+      input.on('end', () => {
+        index += 1;
+        pipeNext();
+      });
+      input.pipe(output, { end: false });
+    };
+
+    output.on('error', (err) => abort(err as Error));
+    pipeNext();
+  });
+
 export class ReceiverServer {
   private server: http.Server | null = null;
 
@@ -266,6 +386,26 @@ export class ReceiverServer {
       return;
     }
 
+    if (method === 'POST' && url === '/api/v1/uploads/init') {
+      await this.handleInitUpload(req, res, workRoot);
+      return;
+    }
+
+    if (method === 'GET' && url.startsWith('/api/v1/uploads/')) {
+      await this.handleUploadStatus(req, res, workRoot);
+      return;
+    }
+
+    if (method === 'PUT' && url.startsWith('/api/v1/uploads/')) {
+      await this.handleUploadChunk(req, res, workRoot);
+      return;
+    }
+
+    if (method === 'POST' && url.startsWith('/api/v1/uploads/')) {
+      await this.handleCompleteUpload(req, res, workRoot);
+      return;
+    }
+
     if (method === 'GET' && url.startsWith('/api/v1/deployments/')) {
       if (!this.checkAuth(req)) {
         json(res, 401, { message: '鉴权失败，请检查 Token' });
@@ -305,6 +445,293 @@ export class ReceiverServer {
     }
 
     return data;
+  }
+
+  private getUploadPaths(workRoot: string, uploadId: string): {
+    uploadDir: string;
+    chunksDir: string;
+    metaPath: string;
+    zipPath: string;
+  } {
+    const uploadDir = path.join(workRoot, 'uploads', uploadId);
+    return {
+      uploadDir,
+      chunksDir: path.join(uploadDir, 'chunks'),
+      metaPath: path.join(uploadDir, 'meta.json'),
+      zipPath: path.join(uploadDir, 'artifact.zip'),
+    };
+  }
+
+  private getUploadMeta(workRoot: string, uploadId: string): UploadSessionMeta | null {
+    const { metaPath } = this.getUploadPaths(workRoot, uploadId);
+    if (!fs.existsSync(metaPath)) return null;
+    return readMeta(metaPath);
+  }
+
+  private async handleInitUpload(
+    req: IncomingMessage,
+    res: ServerResponse,
+    workRoot: string,
+  ): Promise<void> {
+    if (!this.checkAuth(req)) {
+      json(res, 401, { message: '鉴权失败，请检查 Token' });
+      return;
+    }
+
+    let body: UploadInitRequest;
+    try {
+      body = await readBodyAsJson<UploadInitRequest>(req);
+    } catch (err) {
+      json(res, 400, { message: `初始化上传失败: ${(err as Error).message}` });
+      return;
+    }
+
+    if (
+      !body.uploadKey?.trim() ||
+      !body.projectName?.trim() ||
+      !body.branch?.trim() ||
+      !body.fileName?.trim() ||
+      !body.fileSha256?.trim() ||
+      !Number.isInteger(body.fileSize) ||
+      body.fileSize <= 0 ||
+      !Number.isInteger(body.chunkSize) ||
+      body.chunkSize <= 0 ||
+      !Number.isInteger(body.chunkCount) ||
+      body.chunkCount <= 0
+    ) {
+      json(res, 400, { message: '上传初始化参数不完整或格式错误' });
+      return;
+    }
+
+    const uploadId = `upl_${body.uploadKey.trim()}`;
+    const { uploadDir, chunksDir, metaPath } = this.getUploadPaths(workRoot, uploadId);
+    if (fs.existsSync(metaPath)) {
+      const existing = readMeta(metaPath);
+      if (!existing.completed) {
+        const payload: UploadInitResponse = { uploadId: existing.uploadId };
+        json(res, 200, payload);
+        return;
+      }
+      fs.rmSync(uploadDir, { recursive: true, force: true });
+    }
+
+    ensureDir(uploadDir);
+    ensureDir(chunksDir);
+
+    const now = new Date().toISOString();
+    const meta: UploadSessionMeta = {
+      uploadId,
+      uploadKey: body.uploadKey.trim(),
+      fileName: body.fileName,
+      fileSize: body.fileSize,
+      fileSha256: body.fileSha256,
+      chunkSize: body.chunkSize,
+      chunkCount: body.chunkCount,
+      metadata: {
+        projectName: body.projectName,
+        branch: body.branch,
+      },
+      completed: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    writeMeta(metaPath, meta);
+
+    const payload: UploadInitResponse = { uploadId };
+    json(res, 200, payload);
+  }
+
+  private async handleUploadStatus(
+    req: IncomingMessage,
+    res: ServerResponse,
+    workRoot: string,
+  ): Promise<void> {
+    if (!this.checkAuth(req)) {
+      json(res, 401, { message: '鉴权失败，请检查 Token' });
+      return;
+    }
+
+    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    const match = pathname.match(/^\/api\/v1\/uploads\/([^/]+)$/);
+    if (!match) {
+      json(res, 404, { message: 'not found' });
+      return;
+    }
+
+    const uploadId = decodeURIComponent(match[1]);
+    const meta = this.getUploadMeta(workRoot, uploadId);
+    if (!meta) {
+      json(res, 404, { message: 'upload not found' });
+      return;
+    }
+
+    const { chunksDir } = this.getUploadPaths(workRoot, uploadId);
+    const payload: UploadStatusResponse = {
+      uploadId,
+      chunkCount: meta.chunkCount,
+      uploadedIndexes: collectUploadedIndexes(chunksDir),
+      completed: meta.completed,
+    };
+    json(res, 200, payload);
+  }
+
+  private async handleUploadChunk(
+    req: IncomingMessage,
+    res: ServerResponse,
+    workRoot: string,
+  ): Promise<void> {
+    if (!this.checkAuth(req)) {
+      json(res, 401, { message: '鉴权失败，请检查 Token' });
+      return;
+    }
+
+    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    const match = pathname.match(/^\/api\/v1\/uploads\/([^/]+)\/chunks\/(\d+)$/);
+    if (!match) {
+      json(res, 404, { message: 'not found' });
+      return;
+    }
+
+    const uploadId = decodeURIComponent(match[1]);
+    const index = Number(match[2]);
+    const meta = this.getUploadMeta(workRoot, uploadId);
+    if (!meta) {
+      json(res, 404, { message: 'upload not found' });
+      return;
+    }
+    if (meta.completed) {
+      json(res, 409, { message: '上传会话已完成，不能继续上传分片' });
+      return;
+    }
+    if (!Number.isInteger(index) || index < 0 || index >= meta.chunkCount) {
+      json(res, 400, { message: '分片索引超出范围' });
+      return;
+    }
+
+    const expectedSha = (req.headers['x-chunk-sha256'] ?? '').toString().trim();
+    if (!expectedSha) {
+      json(res, 400, { message: '缺少 X-Chunk-SHA256' });
+      return;
+    }
+
+    const { chunksDir, metaPath } = this.getUploadPaths(workRoot, uploadId);
+    ensureDir(chunksDir);
+    const chunkPath = path.join(chunksDir, formatChunkFileName(index));
+
+    let result: { sha256: string; size: number };
+    try {
+      result = await readBodyToFile(req, chunkPath, meta.chunkSize);
+    } catch (err) {
+      const message = (err as Error).message;
+      json(res, message === 'PAYLOAD_TOO_LARGE' ? 413 : 500, {
+        message: `分片接收失败: ${message}`,
+      });
+      return;
+    }
+
+    if (result.sha256 !== expectedSha) {
+      try {
+        fs.unlinkSync(chunkPath);
+      } catch {
+        // ignore cleanup failure
+      }
+      json(res, 400, { message: `分片校验失败: chunk ${index}` });
+      return;
+    }
+
+    meta.updatedAt = new Date().toISOString();
+    writeMeta(metaPath, meta);
+    json(res, 200, { ok: true, index, size: result.size });
+  }
+
+  private async handleCompleteUpload(
+    req: IncomingMessage,
+    res: ServerResponse,
+    workRoot: string,
+  ): Promise<void> {
+    if (!this.checkAuth(req)) {
+      json(res, 401, { message: '鉴权失败，请检查 Token' });
+      return;
+    }
+
+    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    const match = pathname.match(/^\/api\/v1\/uploads\/([^/]+)\/complete$/);
+    if (!match) {
+      json(res, 404, { message: 'not found' });
+      return;
+    }
+
+    const uploadId = decodeURIComponent(match[1]);
+    const paths = this.getUploadPaths(workRoot, uploadId);
+    const meta = this.getUploadMeta(workRoot, uploadId);
+    if (!meta) {
+      json(res, 404, { message: 'upload not found' });
+      return;
+    }
+    if (meta.completed && meta.deploymentId) {
+      const payload: UploadCompleteResponse = {
+        deploymentId: meta.deploymentId,
+        status: 'queued',
+      };
+      json(res, 200, payload);
+      return;
+    }
+
+    const uploadedIndexes = collectUploadedIndexes(paths.chunksDir);
+    if (uploadedIndexes.length !== meta.chunkCount) {
+      json(res, 409, { message: '分片未上传完整，不能合并' });
+      return;
+    }
+
+    try {
+      const merged = await mergeChunksToZip(paths.chunksDir, meta.chunkCount, paths.zipPath);
+      if (merged.sha256 !== meta.fileSha256) {
+        try {
+          fs.unlinkSync(paths.zipPath);
+        } catch {
+          // ignore cleanup failure
+        }
+        json(res, 400, { message: '整包 SHA256 校验失败，文件可能在传输中损坏' });
+        return;
+      }
+      if (merged.size !== meta.fileSize) {
+        json(res, 400, { message: '整包大小校验失败，文件可能在传输中损坏' });
+        return;
+      }
+    } catch (err) {
+      json(res, 500, { message: `合并分片失败: ${(err as Error).message}` });
+      return;
+    }
+
+    const deploymentId = `dep_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const jobDir = path.join(workRoot, deploymentId);
+    ensureDir(jobDir);
+    const zipPath = path.join(jobDir, 'artifact.zip');
+    const extractPath = path.join(jobDir, 'extracted');
+    ensureDir(extractPath);
+    fs.copyFileSync(paths.zipPath, zipPath);
+
+    const task: DeploymentTask = {
+      id: deploymentId,
+      status: 'queued',
+      projectName: meta.metadata.projectName,
+      branch: meta.metadata.branch,
+      createdAt: new Date().toISOString(),
+      logs: `[upload] ${uploadId} merged ${meta.chunkCount} chunks\n`,
+    };
+    this.tasks.set(deploymentId, task);
+    this.enqueueProcess(deploymentId, zipPath, extractPath, meta.metadata);
+
+    meta.completed = true;
+    meta.deploymentId = deploymentId;
+    meta.updatedAt = new Date().toISOString();
+    writeMeta(paths.metaPath, meta);
+
+    const payload: UploadCompleteResponse = {
+      deploymentId,
+      status: 'queued',
+    };
+    json(res, 200, payload);
   }
 
   private enqueueProcess(

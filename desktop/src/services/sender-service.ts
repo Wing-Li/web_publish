@@ -7,6 +7,10 @@ import {
   BuildAndDeployResult,
   BuildLocalResult,
   SenderProject,
+  UploadCompleteResponse,
+  UploadInitRequest,
+  UploadInitResponse,
+  UploadStatusResponse,
 } from '../shared/types';
 import { runCommand } from '../shared/run-command';
 
@@ -22,6 +26,7 @@ const COMMON_PATH_ENTRIES = [
   '/usr/sbin',
   '/sbin',
 ];
+const UPLOAD_CHUNK_SIZE = 9 * 1024 * 1024;
 let cachedShellPath = '';
 let cachedInteractiveShellPath = '';
 
@@ -84,6 +89,39 @@ const getBuildEnv = async (cwd: string): Promise<NodeJS.ProcessEnv> => {
 const sha256File = (filePath: string): string => {
   const content = fs.readFileSync(filePath);
   return crypto.createHash('sha256').update(content).digest('hex');
+};
+
+const sha256Buffer = (content: Buffer): string => {
+  return crypto.createHash('sha256').update(content).digest('hex');
+};
+
+const buildUploadKey = (
+  projectName: string,
+  branch: string,
+  fileSha256: string,
+  fileSize: number,
+): string => {
+  return crypto
+    .createHash('sha256')
+    .update(`${projectName}:${branch}:${fileSha256}:${fileSize}`)
+    .digest('hex')
+    .slice(0, 24);
+};
+
+const buildReceiverUrl = (baseUrl: string, pathname: string): string => {
+  return `${baseUrl.replace(/\/+$/, '')}${pathname}`;
+};
+
+const requestJson = async <T>(
+  url: string,
+  init: RequestInit,
+): Promise<T> => {
+  const response = await fetch(url, init);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`请求失败 (HTTP ${response.status}): ${text}`);
+  }
+  return response.json() as Promise<T>;
 };
 
 const ensure = (condition: boolean, message: string): void => {
@@ -249,33 +287,99 @@ export const runBuildAndDeployProject = async (
 
   const { zipPath } = await buildProjectArtifact(project, log);
 
+  const stat = fs.statSync(zipPath);
   const sha = sha256File(zipPath);
-  const metadata = {
+  const metadata: UploadInitRequest = {
+    uploadKey: buildUploadKey(project.pagesProjectName, project.deployBranch, sha, stat.size),
     projectName: project.pagesProjectName,
     branch: project.deployBranch,
+    fileName: path.basename(zipPath),
+    fileSize: stat.size,
+    fileSha256: sha,
+    chunkSize: UPLOAD_CHUNK_SIZE,
+    chunkCount: Math.max(1, Math.ceil(stat.size / UPLOAD_CHUNK_SIZE)),
   };
-  const metadataBase64 = Buffer.from(JSON.stringify(metadata), 'utf-8').toString('base64');
-  const body = fs.readFileSync(zipPath);
 
-  log(`▶ 上传到接收端 ${project.receiverBaseUrl} …`);
-  const response = await fetch(`${project.receiverBaseUrl}/api/v1/deployments`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${project.receiverToken}`,
-      'Content-Type': 'application/octet-stream',
-      'X-Checksum-SHA256': sha,
-      'X-Metadata-Base64': metadataBase64,
+  log(`▶ 初始化分片上传到接收端 ${project.receiverBaseUrl} …`);
+  const initResult = await requestJson<UploadInitResponse>(
+    buildReceiverUrl(project.receiverBaseUrl, '/api/v1/uploads/init'),
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${project.receiverToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(metadata),
     },
-    body,
-  });
+  );
+  const uploadId = initResult.uploadId;
+  log(`✓ 上传会话已创建，uploadId: ${uploadId}`);
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`上传失败 (HTTP ${response.status}): ${text}`);
+  const statusResult = await requestJson<UploadStatusResponse>(
+    buildReceiverUrl(project.receiverBaseUrl, `/api/v1/uploads/${encodeURIComponent(uploadId)}`),
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${project.receiverToken}`,
+      },
+    },
+  );
+  const uploadedSet = new Set(statusResult.uploadedIndexes);
+
+  const fd = fs.openSync(zipPath, 'r');
+  try {
+    for (let index = 0; index < metadata.chunkCount; index += 1) {
+      const start = index * metadata.chunkSize;
+      const end = Math.min(start + metadata.chunkSize, stat.size);
+      const size = end - start;
+
+      if (uploadedSet.has(index)) {
+        log(`↺ 跳过已上传分片 ${index + 1}/${metadata.chunkCount}\n`);
+        continue;
+      }
+
+      const buffer = Buffer.allocUnsafe(size);
+      fs.readSync(fd, buffer, 0, size, start);
+      const chunkSha = sha256Buffer(buffer);
+
+      log(`▶ 上传分片 ${index + 1}/${metadata.chunkCount} (${(size / 1024 / 1024).toFixed(2)} MB)\n`);
+      const response = await fetch(
+        buildReceiverUrl(
+          project.receiverBaseUrl,
+          `/api/v1/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`,
+        ),
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${project.receiverToken}`,
+            'Content-Type': 'application/octet-stream',
+            'X-Chunk-SHA256': chunkSha,
+          },
+          body: buffer,
+        },
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`上传分片失败 (chunk ${index + 1}/${metadata.chunkCount}, HTTP ${response.status}): ${text}`);
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
   }
 
-  const result = (await response.json()) as { deploymentId: string };
-  log(`✓ 上传完成，deploymentId: ${result.deploymentId}`);
+  log(`▶ 通知接收端合并分片并开始部署 …`);
+  const result = await requestJson<UploadCompleteResponse>(
+    buildReceiverUrl(project.receiverBaseUrl, `/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`),
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${project.receiverToken}`,
+      },
+    },
+  );
+
+  log(`✓ 分片上传完成，deploymentId: ${result.deploymentId}`);
   return { projectId: project.id, deploymentId: result.deploymentId };
 };
 
