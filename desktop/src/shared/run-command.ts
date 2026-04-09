@@ -1,9 +1,54 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 
 export interface RunResult {
   code: number;
   output: string;
 }
+
+const dedupePathEntries = (entries: string[]): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const entry of entries) {
+    const value = entry.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+
+  return result;
+};
+
+const normalizeSpawnEnv = (
+  command: string,
+  env?: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv => {
+  const merged: NodeJS.ProcessEnv = { ...process.env, ...env };
+  const pathKey = Object.keys(merged).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+  const currentPath = merged[pathKey] ?? '';
+  const entries = currentPath.split(path.delimiter).filter(Boolean);
+
+  if (path.isAbsolute(command)) {
+    entries.unshift(path.dirname(command));
+  }
+
+  if (process.platform === 'darwin') {
+    entries.push(
+      '/opt/homebrew/bin',
+      '/opt/homebrew/sbin',
+      '/usr/local/bin',
+      '/usr/local/sbin',
+      '/usr/bin',
+      '/bin',
+      '/usr/sbin',
+      '/sbin',
+    );
+  }
+
+  merged[pathKey] = dedupePathEntries(entries).join(path.delimiter);
+  return merged;
+};
 
 export const runCommand = (
   command: string,
@@ -15,7 +60,7 @@ export const runCommand = (
   new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
-      env: { ...process.env, ...env },
+      env: normalizeSpawnEnv(command, env),
     });
 
     let output = '';

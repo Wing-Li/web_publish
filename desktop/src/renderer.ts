@@ -514,7 +514,14 @@ const handleError = (err: unknown, projectId?: string): void => {
 
 const syncSenderStatus = async (): Promise<void> => {
   for (const [pid, did] of recentDeploymentMap.entries()) {
-    const task = await window.desktopApi.getDeployment(did);
+    const project = config.senderProjects.find((item) => item.id === pid);
+    if (!project) continue;
+
+    const task = await window.desktopApi.getRemoteDeployment(
+      project.receiverBaseUrl,
+      project.receiverToken,
+      did,
+    );
     if (!task) continue;
     const steps = projectDeployStepsMap.get(pid);
     if (!steps) continue;

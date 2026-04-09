@@ -33,6 +33,12 @@ const api = {
     ipcRenderer.invoke('receiver:status'),
   getDeployment: (id: string): Promise<DeploymentTask | null> =>
     ipcRenderer.invoke('receiver:get-deployment', id),
+  getRemoteDeployment: (
+    receiverBaseUrl: string,
+    receiverToken: string,
+    id: string,
+  ): Promise<DeploymentTask | null> =>
+    ipcRenderer.invoke('sender:get-remote-deployment', receiverBaseUrl, receiverToken, id),
   getAllDeployments: (): Promise<DeploymentTask[]> =>
     ipcRenderer.invoke('receiver:get-all-deployments'),
 

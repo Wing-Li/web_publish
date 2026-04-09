@@ -267,6 +267,10 @@ export class ReceiverServer {
     }
 
     if (method === 'GET' && url.startsWith('/api/v1/deployments/')) {
+      if (!this.checkAuth(req)) {
+        json(res, 401, { message: '鉴权失败，请检查 Token' });
+        return;
+      }
       const id = url.replace('/api/v1/deployments/', '');
       const task = this.tasks.get(id);
       if (!task) {

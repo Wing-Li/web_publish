@@ -184,6 +184,42 @@ const registerIpcHandlers = (): void => {
     return receiverServer.getTask(id) ?? null;
   });
 
+  ipcMain.handle(
+    'sender:get-remote-deployment',
+    async (_, receiverBaseUrl: string, receiverToken: string, id: string) => {
+      if (!receiverBaseUrl?.trim()) {
+        throw new Error('接收端地址不能为空');
+      }
+      if (!receiverToken?.trim()) {
+        throw new Error('接收端 Token 不能为空');
+      }
+      if (!id?.trim()) {
+        throw new Error('deploymentId 不能为空');
+      }
+
+      const response = await fetch(
+        `${receiverBaseUrl.replace(/\/+$/, '')}/api/v1/deployments/${encodeURIComponent(id)}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${receiverToken}`,
+          },
+        },
+      );
+
+      if (response.status === 404) {
+        return null;
+      }
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`查询远程部署状态失败 (HTTP ${response.status}): ${text}`);
+      }
+
+      return response.json();
+    },
+  );
+
   ipcMain.handle('receiver:get-all-deployments', () => {
     return receiverServer.getAllTasks();
   });
