@@ -187,6 +187,7 @@ const buildProjectArtifact = async (
 ): Promise<{ zipPath: string }> => {
   await validateProjectBeforeBuild(project, log);
 
+  log('\n┏━ 构建阶段 ━━━━━━━━━━━\n');
   log(`▶ 执行构建命令: ${project.buildCommand}`);
   const buildEnv = await getBuildEnv(project.projectPath);
 
@@ -250,6 +251,7 @@ const buildProjectArtifact = async (
   const zipPath = path.join(artifactDir, zipName);
   if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
+  log('\n┏━ 压缩阶段 ━━━━━━━━━━━\n');
   log(`▶ 压缩输出目录 → ${zipPath}`);
   const zipResult = await runCommand(
     'zip',
@@ -300,6 +302,7 @@ export const runBuildAndDeployProject = async (
     chunkCount: Math.max(1, Math.ceil(stat.size / UPLOAD_CHUNK_SIZE)),
   };
 
+  log('\n┏━ 上传阶段 ━━━━━━━━━━━\n');
   log(`▶ 初始化分片上传到接收端 ${project.receiverBaseUrl} …`);
   const initResult = await requestJson<UploadInitResponse>(
     buildReceiverUrl(project.receiverBaseUrl, '/api/v1/uploads/init'),
@@ -368,6 +371,7 @@ export const runBuildAndDeployProject = async (
     fs.closeSync(fd);
   }
 
+  log('\n┏━ 部署阶段 ━━━━━━━━━━━\n');
   log(`▶ 通知接收端合并分片并开始部署 …`);
   const result = await requestJson<UploadCompleteResponse>(
     buildReceiverUrl(project.receiverBaseUrl, `/api/v1/uploads/${encodeURIComponent(uploadId)}/complete`),

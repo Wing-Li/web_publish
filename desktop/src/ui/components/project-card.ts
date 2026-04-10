@@ -13,6 +13,170 @@ export interface DeployStep {
   status: StepStatus;
 }
 
+type LogPhase = 'build' | 'zip' | 'upload' | 'deploy' | 'other';
+
+interface LogSection {
+  phase: LogPhase;
+  title: string;
+  lines: string[];
+}
+
+const LOG_PHASE_META: Record<LogPhase, { title: string; badgeClass: string; sectionClass: string; dotClass: string; }> = {
+  build: {
+    title: '构建阶段',
+    badgeClass: 'bg-cyan-100 text-cyan-800 border border-cyan-200',
+    sectionClass: 'border-cyan-500/15 bg-cyan-500/[0.08]',
+    dotClass: 'bg-cyan-400',
+  },
+  zip: {
+    title: '压缩阶段',
+    badgeClass: 'bg-violet-100 text-violet-800 border border-violet-200',
+    sectionClass: 'border-violet-500/15 bg-violet-500/[0.08]',
+    dotClass: 'bg-violet-400',
+  },
+  upload: {
+    title: '上传阶段',
+    badgeClass: 'bg-amber-100 text-amber-800 border border-amber-200',
+    sectionClass: 'border-amber-500/15 bg-amber-500/[0.08]',
+    dotClass: 'bg-amber-400',
+  },
+  deploy: {
+    title: '部署阶段',
+    badgeClass: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
+    sectionClass: 'border-emerald-500/15 bg-emerald-500/[0.08]',
+    dotClass: 'bg-emerald-400',
+  },
+  other: {
+    title: '其他日志',
+    badgeClass: 'bg-slate-100 text-slate-700 border border-slate-200',
+    sectionClass: 'border-slate-500/15 bg-slate-500/[0.08]',
+    dotClass: 'bg-slate-400',
+  },
+};
+
+const normalizeLogText = (text: string): string =>
+  text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/([^\n])((?:▶|✓|✗|↺)\s)/g, '$1\n$2')
+    .replace(/([^\n])(\n?┏━ )/g, '$1\n$2')
+    .trim();
+
+const phaseFromHeader = (line: string): LogPhase | null => {
+  if (line.includes('构建阶段')) return 'build';
+  if (line.includes('压缩阶段')) return 'zip';
+  if (line.includes('上传阶段')) return 'upload';
+  if (line.includes('部署阶段')) return 'deploy';
+  return null;
+};
+
+const phaseFromLine = (line: string, currentPhase: LogPhase): LogPhase => {
+  if (/执行构建命令|构建完成|npm |pnpm |yarn |vite |building/i.test(line)) return 'build';
+  if (/压缩|zipPath|zip\b|adding:/i.test(line)) return 'zip';
+  if (/上传|uploadId|分片|chunk|receiverBaseUrl|接收端/i.test(line)) return 'upload';
+  if (/部署|deploymentId|wrangler|Cloudflare|合并分片/i.test(line)) return 'deploy';
+  return currentPhase;
+};
+
+const parseLogSections = (logContent: string): LogSection[] => {
+  const text = normalizeLogText(logContent);
+  if (!text) return [];
+
+  const sections: LogSection[] = [];
+  let currentPhase: LogPhase = 'other';
+  let currentSection: LogSection | null = null;
+
+  const ensureSection = (phase: LogPhase): LogSection => {
+    if (currentSection && currentSection.phase === phase) return currentSection;
+    currentPhase = phase;
+    currentSection = { phase, title: LOG_PHASE_META[phase].title, lines: [] };
+    sections.push(currentSection);
+    return currentSection;
+  };
+
+  text.split('\n').forEach((rawLine) => {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) return;
+
+    if (line.startsWith('┏━')) {
+      const phase = phaseFromHeader(line) ?? 'other';
+      ensureSection(phase);
+      return;
+    }
+
+    if (line.startsWith('━━')) {
+      currentSection = { phase: 'other', title: line.replace(/^━━\s*/, '').replace(/\s*━━$/, '') || '其他日志', lines: [] };
+      sections.push(currentSection);
+      currentPhase = 'other';
+      return;
+    }
+
+    const phase = phaseFromLine(line, currentPhase);
+    ensureSection(phase).lines.push(line);
+  });
+
+  return sections.filter((section) => section.lines.length > 0);
+};
+
+const renderLogLine = (line: string): string => {
+  let toneClass = 'text-slate-300';
+  let markerClass = 'text-slate-500';
+
+  if (line.startsWith('✓')) {
+    toneClass = 'text-emerald-300';
+    markerClass = 'text-emerald-400';
+  } else if (line.startsWith('▶')) {
+    toneClass = 'text-sky-200';
+    markerClass = 'text-sky-400';
+  } else if (line.startsWith('↺')) {
+    toneClass = 'text-amber-200';
+    markerClass = 'text-amber-400';
+  } else if (line.startsWith('✗')) {
+    toneClass = 'text-rose-300';
+    markerClass = 'text-rose-400';
+  } else if (/^adding:/i.test(line)) {
+    toneClass = 'text-slate-400';
+    markerClass = 'text-violet-300';
+  }
+
+  const marker = /^[✓▶↺✗]/.test(line)
+    ? `<span class="mt-0.5 text-[13px] leading-none ${markerClass}">${esc(line[0])}</span><span class="${toneClass}">${esc(line.slice(1).trimStart())}</span>`
+    : /^adding:/i.test(line)
+      ? `<span class="mt-1 h-1.5 w-1.5 rounded-full ${markerClass}"></span><span class="${toneClass}">${esc(line)}</span>`
+      : `<span class="mt-1 h-1.5 w-1.5 rounded-full bg-slate-600"></span><span class="${toneClass}">${esc(line)}</span>`;
+
+  return `
+    <div class="grid grid-cols-[12px,1fr] gap-3 items-start text-[12px] leading-6 break-all">
+      ${marker}
+    </div>
+  `;
+};
+
+export const renderProjectLog = (logContent?: string): string => {
+  const sections = parseLogSections(logContent ?? '');
+  if (sections.length === 0) return '';
+
+  return sections.map((section) => {
+    const meta = LOG_PHASE_META[section.phase];
+    return `
+      <section class="rounded-2xl border px-4 py-3 ${meta.sectionClass}">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="h-2.5 w-2.5 rounded-full ${meta.dotClass}"></span>
+          <span class="px-2.5 py-1 rounded-full text-[10px] font-black tracking-[0.16em] uppercase ${meta.badgeClass}">
+            ${esc(section.title)}
+          </span>
+          <span class="text-[10px] font-bold tracking-[0.12em] uppercase text-slate-500">
+            ${section.lines.length} 行
+          </span>
+        </div>
+        <div class="space-y-1">
+          ${section.lines.map(renderLogLine).join('')}
+        </div>
+      </section>
+    `;
+  }).join('');
+};
+
 const stepIcon = (status: StepStatus): string => {
   if (status === 'done')    return '<svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>';
   if (status === 'failed')  return '<svg class="w-3.5 h-3.5 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"></path></svg>';
@@ -260,10 +424,9 @@ export const createProjectCard = (
             清除日志
           </button>
         </div>
-        <pre class="log-output text-[11px] leading-relaxed bg-slate-900 text-slate-300
-                    p-4 max-h-64 overflow-y-auto whitespace-pre-wrap
-                    break-all font-mono m-0 border-0"
-             id="log-${project.id}">${esc(logContent ?? '')}</pre>
+        <div class="log-output bg-slate-950 text-slate-300 p-4 max-h-72 overflow-y-auto
+                    font-mono m-0 border-0 space-y-3"
+             id="log-${project.id}">${renderProjectLog(logContent)}</div>
       </div>
     </div>
   `;

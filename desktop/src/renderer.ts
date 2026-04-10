@@ -15,6 +15,7 @@ import { $, getVal, setVal, esc } from './ui/utils/dom';
 import { showToast } from './ui/components/toast';
 import { 
   createProjectCard, 
+  renderProjectLog,
   renderDeploySteps, 
   DeployStep, 
   BranchRuntime 
@@ -404,15 +405,34 @@ const clearProjectSteps = (projectId: string): void => {
 
 // ─── Log Management ──────────────────────────────────────────────────────────
 
+const normalizeLogChunk = (msg: string): string =>
+  msg
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/([^\n])((?:▶|✓|✗|↺)\s)/g, '$1\n$2')
+    .replace(/([^\n])(\n?┏━ )/g, '$1\n$2');
+
+const looksLikeStageStart = (msg: string): boolean =>
+  /^(?:\s*(?:┏━|━━|▶|✓|✗|↺))/.test(msg);
+
+const mergeLogText = (existing: string, incoming: string): string => {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  if (existing.endsWith('\n') || incoming.startsWith('\n')) return `${existing}${incoming}`;
+  if (looksLikeStageStart(incoming)) return `${existing}\n${incoming}`;
+  return `${existing}${incoming}`;
+};
+
 const appendLog = (projectId: string, msg: string): void => {
   const existing = projectLogMap.get(projectId) ?? '';
-  let next = existing + msg;
+  const incoming = normalizeLogChunk(msg);
+  let next = mergeLogText(existing, incoming);
   if (next.length > LOG_MAX_BYTES) next = next.slice(next.length - LOG_MAX_BYTES);
   projectLogMap.set(projectId, next);
 
   const pre = document.getElementById(`log-${projectId}`);
   if (pre) {
-    pre.textContent = next;
+    pre.innerHTML = renderProjectLog(next);
     pre.scrollTop = pre.scrollHeight;
   }
 
@@ -423,7 +443,7 @@ const appendLog = (projectId: string, msg: string): void => {
 const clearLog = (projectId: string): void => {
   projectLogMap.delete(projectId);
   const pre = document.getElementById(`log-${projectId}`);
-  if (pre) pre.textContent = '';
+  if (pre) pre.innerHTML = '';
   const card = document.getElementById(`card-${projectId}`);
   card?.querySelector('.project-log-area')?.classList.add('hidden');
 };
