@@ -549,6 +549,14 @@ const syncSenderStatus = async (): Promise<void> => {
     if (task.status === 'running') {
       setStep(pid, 'deploy', 'running');
     } else if (task.status === 'success') {
+      appendLog(
+        pid,
+        [
+          '\n┏━ 部署完成 ━━━━━━━━━━━',
+          `✓ 远程部署成功，deploymentId: ${task.id}`,
+          task.url ? `▶ 访问地址: ${task.url}` : '',
+        ].filter(Boolean).join('\n') + '\n',
+      );
       setStep(pid, 'deploy', 'done');
       setStep(pid, 'done', 'done');
       setBusy(pid, false);
@@ -556,6 +564,14 @@ const syncSenderStatus = async (): Promise<void> => {
       recentDeploymentMap.delete(pid);
       setTimeout(() => clearProjectSteps(pid), 3000);
     } else if (task.status === 'failed') {
+      appendLog(
+        pid,
+        [
+          '\n┏━ 部署完成 ━━━━━━━━━━━',
+          `✗ 远程部署失败，deploymentId: ${task.id}`,
+          task.error ? `✗ 失败原因: ${task.error}` : '',
+        ].filter(Boolean).join('\n') + '\n',
+      );
       setStep(pid, 'deploy', 'failed');
       setBusy(pid, false);
       showToast(`部署失败: ${task.error?.slice(0, 120) ?? '未知错误'}`, 'error');
