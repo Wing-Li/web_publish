@@ -66,6 +66,16 @@ export const appLayoutTemplate = `
         <button id="saveBtn" class="w-full h-11 bg-teal-500 hover:bg-teal-400 text-white font-bold text-sm rounded-xl transition-all active:scale-95 shadow-lg shadow-teal-500/20">
           保存全部配置
         </button>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="exportConfigBtn" class="h-9 inline-flex items-center justify-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 font-bold text-xs transition-all active:scale-95 border border-white/10">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"></path></svg>
+            导出
+          </button>
+          <button id="importConfigBtn" class="h-9 inline-flex items-center justify-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 font-bold text-xs transition-all active:scale-95 border border-white/10">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 21V9m0 0l-4 4m4-4l4 4M4 7V5a2 2 0 012-2h12a2 2 0 012 2v2"></path></svg>
+            导入
+          </button>
+        </div>
       </div>
       <div id="configPathTip" class="text-[10px] text-slate-400 truncate opacity-60 hover:opacity-100 transition-opacity cursor-help px-2" title=""></div>
     </div>

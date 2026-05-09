@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { ConfigStore } from './services/config-store';
@@ -50,6 +51,44 @@ const registerIpcHandlers = (): void => {
   });
 
   ipcMain.handle('app:get-config-path', () => configStore.getPath());
+
+  ipcMain.handle('app:export-config', async (_, draftConfig: AppConfig) => {
+    const normalized = configStore.normalize(draftConfig);
+    const result = await dialog.showSaveDialog({
+      title: '导出配置',
+      defaultPath: `web-publisher-config-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [
+        { name: 'JSON 配置文件', extensions: ['json'] },
+      ],
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { canceled: true };
+    }
+
+    fs.writeFileSync(result.filePath, JSON.stringify(normalized, null, 2), 'utf-8');
+    return { canceled: false, filePath: result.filePath };
+  });
+
+  ipcMain.handle('app:import-config', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '导入配置',
+      properties: ['openFile'],
+      filters: [
+        { name: 'JSON 配置文件', extensions: ['json'] },
+      ],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    const filePath = result.filePaths[0];
+    const imported = configStore.normalize(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+    config = imported;
+    configStore.save(config);
+    return { canceled: false, filePath, config };
+  });
 
   ipcMain.handle('app:pick-directory', async (_, initialPath?: string) => {
     const result = await dialog.showOpenDialog({

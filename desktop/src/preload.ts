@@ -14,6 +14,12 @@ const api = {
   updateConfig: (config: AppConfig): Promise<AppConfig> =>
     ipcRenderer.invoke('app:update-config', config),
   getConfigPath: (): Promise<string> => ipcRenderer.invoke('app:get-config-path'),
+  exportConfig: (
+    config: AppConfig,
+  ): Promise<{ canceled: boolean; filePath?: string }> =>
+    ipcRenderer.invoke('app:export-config', config),
+  importConfig: (): Promise<{ canceled: boolean; filePath?: string; config?: AppConfig }> =>
+    ipcRenderer.invoke('app:import-config'),
   pickDirectory: (initialPath?: string): Promise<string> =>
     ipcRenderer.invoke('app:pick-directory', initialPath),
   listGitBranches: (

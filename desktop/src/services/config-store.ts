@@ -54,6 +54,12 @@ const ensureDir = (dir: string): void => {
   }
 };
 
+const normalizeMode = (mode: unknown): AppConfig['mode'] =>
+  mode === 'receiver' || mode === 'both' ? mode : 'sender';
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
 const normalizeProjects = (
   projects: Partial<SenderProject>[] | undefined,
   legacy: LegacyConfig,
@@ -106,20 +112,31 @@ export class ConfigStore {
     }
 
     const content = fs.readFileSync(this.filePath, 'utf-8');
-    const parsed = JSON.parse(content) as Partial<AppConfig> & LegacyConfig;
-
-    const normalized: AppConfig = {
-      ...DEFAULT_CONFIG,
-      ...parsed,
-      senderProjects: normalizeProjects(parsed.senderProjects, parsed),
-      receiver: {
-        ...DEFAULT_CONFIG.receiver,
-        ...(parsed.receiver ?? {}),
-      },
-    };
+    const normalized = this.normalize(JSON.parse(content));
 
     this.save(normalized);
     return normalized;
+  }
+
+  normalize(raw: unknown): AppConfig {
+    if (!raw || typeof raw !== 'object') {
+      throw new Error('配置文件格式无效，请选择由本工具导出的 JSON 文件。');
+    }
+
+    const parsed = raw as Partial<AppConfig> & LegacyConfig;
+    const senderProjects = Array.isArray(parsed.senderProjects) ? parsed.senderProjects : undefined;
+    const receiver = isRecord(parsed.receiver) ? parsed.receiver : {};
+
+    return {
+      ...DEFAULT_CONFIG,
+      ...parsed,
+      mode: normalizeMode(parsed.mode),
+      senderProjects: normalizeProjects(senderProjects, parsed),
+      receiver: {
+        ...DEFAULT_CONFIG.receiver,
+        ...receiver,
+      },
+    };
   }
 
   save(config: AppConfig): void {

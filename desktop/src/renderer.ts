@@ -468,7 +468,8 @@ const setBusy = (projectId: string, busy: boolean): void => {
 
 const setGlobalBusy = (busy: boolean): void => {
   [$<HTMLButtonElement>('buildAllBtn'), $<HTMLButtonElement>('deployAllBtn'),
-   $<HTMLButtonElement>('saveBtn'), $<HTMLButtonElement>('addProjectBtn')]
+   $<HTMLButtonElement>('saveBtn'), $<HTMLButtonElement>('addProjectBtn'),
+   $<HTMLButtonElement>('exportConfigBtn'), $<HTMLButtonElement>('importConfigBtn')]
     .filter(Boolean)
     .forEach(btn => { btn.disabled = busy; });
 };
@@ -628,6 +629,37 @@ const bindEvents = (): void => {
       await preloadAllBranches();
       if (currentActiveTab === 'sender') renderProjectCards();
       showToast('所有配置已成功保存', 'success');
+    } catch (err) { handleError(err); }
+    finally { setGlobalBusy(false); }
+  };
+
+  $('exportConfigBtn').onclick = async () => {
+    try {
+      setGlobalBusy(true);
+      const result = await window.desktopApi.exportConfig(collectConfig());
+      if (!result.canceled) {
+        showToast('配置已导出，可直接发给同事导入', 'success');
+      }
+    } catch (err) { handleError(err); }
+    finally { setGlobalBusy(false); }
+  };
+
+  $('importConfigBtn').onclick = async () => {
+    if (!window.confirm('导入配置会覆盖当前全部设置，是否继续？')) return;
+
+    try {
+      setGlobalBusy(true);
+      const result = await window.desktopApi.importConfig();
+      if (result.canceled || !result.config) return;
+
+      config = result.config;
+      setModeRadio(config.mode);
+      currentActiveTab = config.mode === 'receiver' ? 'receiver' : 'sender';
+      switchView(currentActiveTab);
+      applyModeVisibility(config.mode);
+      await preloadAllBranches();
+      if (currentActiveTab === 'sender') renderProjectCards();
+      showToast('配置已导入并保存', 'success');
     } catch (err) { handleError(err); }
     finally { setGlobalBusy(false); }
   };
