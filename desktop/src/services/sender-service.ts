@@ -10,6 +10,7 @@ import {
   UploadInitResponse,
   UploadStatusResponse,
 } from '../shared/types';
+import { artifactDirectory, formatDateTimeForFileName, validateProjectBeforePack } from './project-artifact';
 import { runCommand } from '../shared/run-command';
 
 type LogFn = (msg: string) => void;
@@ -132,58 +133,11 @@ const ensureDir = (dir: string): void => {
   }
 };
 
-const formatDateTimeForFileName = (date: Date): string => {
-  const pad2 = (value: number): string => String(value).padStart(2, '0');
-  const mm = pad2(date.getMonth() + 1);
-  const dd = pad2(date.getDate());
-  const hh = pad2(date.getHours());
-  const mi = pad2(date.getMinutes());
-  const ss = pad2(date.getSeconds());
-  return `${mm}${dd}_${hh}${mi}${ss}`;
-};
-
-const validateProjectBeforeBuild = async (
-  project: DeployProject,
-  log: LogFn,
-): Promise<void> => {
-  ensure(Boolean(project.projectPath), '项目路径不能为空');
-  if (process.platform === 'darwin') {
-    try {
-      fs.accessSync(project.projectPath, fs.constants.R_OK | fs.constants.X_OK);
-    } catch {
-      throw new Error(
-        `[MAC_PERMISSION_REQUIRED] 无法访问项目目录: ${project.projectPath}\n` +
-        'macOS 可能尚未授予此应用访问“文稿/桌面/下载”等目录的权限。',
-      );
-    }
-  }
-
-  log('▶ 检查 Git 分支…');
-  const gitCheck = await runCommand(
-    'git',
-    ['rev-parse', '--abbrev-ref', 'HEAD'],
-    project.projectPath,
-  );
-
-  if (gitCheck.code !== 0) {
-    throw new Error(`无法读取 Git 分支，请确认目录是 Git 仓库:\n${gitCheck.output}`);
-  }
-
-  const currentBranch = gitCheck.output.trim();
-  log(`  当前分支: ${currentBranch}`);
-
-  if (project.gitBranch && currentBranch !== project.gitBranch) {
-    throw new Error(
-      `项目 ${project.name} 当前分支为 ${currentBranch}，与配置 ${project.gitBranch} 不一致。`,
-    );
-  }
-};
-
 const buildProjectArtifact = async (
   project: DeployProject,
   log: LogFn,
 ): Promise<{ zipPath: string }> => {
-  await validateProjectBeforeBuild(project, log);
+  await validateProjectBeforePack(project, log);
 
   log('\n┏━ 构建阶段 ━━━━━━━━━━━\n');
   log(`▶ 执行构建命令: ${project.buildCommand}`);
@@ -236,13 +190,7 @@ const buildProjectArtifact = async (
     `构建输出目录为空: ${outputDir}`,
   );
 
-  // 支持自定义压缩包输出目录；未配置时回退到项目目录下默认路径
-  const customArtifactDir = project.artifactOutputDir?.trim();
-  const artifactDir = customArtifactDir
-    ? (path.isAbsolute(customArtifactDir)
-      ? customArtifactDir
-      : path.resolve(project.projectPath, customArtifactDir))
-    : path.resolve(project.projectPath, '.web-publisher-artifacts');
+  const artifactDir = artifactDirectory(project);
   ensureDir(artifactDir);
   const normalizedProjectName = (project.name || project.id).trim().replace(/\s+/g, '_');
   const zipName = `${normalizedProjectName}_${formatDateTimeForFileName(new Date())}.zip`;

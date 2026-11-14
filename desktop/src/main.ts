@@ -9,7 +9,7 @@ import {
   runBuildAndDeployProject,
   runBuildProjectOnly,
 } from './services/sender-service';
-import { runCommand, runCommandStrict } from './shared/run-command';
+import { currentGitBranch, runCommand, runCommandStrict } from './shared/run-command';
 import { AppConfig, SourceProject } from './shared/types';
 
 if (started) {
@@ -127,7 +127,7 @@ const registerIpcHandlers = (): void => {
     return false;
   });
 
-  ipcMain.handle('app:list-git-branches', async (_, projectPath: string) => {
+  ipcMain.handle('app:list-git-branches', async (_, projectPath: string, allowNonGit = false) => {
     if (!projectPath) {
       return { branches: [], current: '' };
     }
@@ -136,18 +136,13 @@ const registerIpcHandlers = (): void => {
       'git',
       ['branch', '--format=%(refname:short)'],
       projectPath,
+      { LC_ALL: 'C' },
     );
     if (branchResult.code !== 0) {
+      if (allowNonGit && branchResult.output.includes('not a git repository')) {
+        return { branches: [], current: '' };
+      }
       throw new Error(`读取 Git 分支失败: ${branchResult.output}`);
-    }
-
-    const currentResult = await runCommand(
-      'git',
-      ['rev-parse', '--abbrev-ref', 'HEAD'],
-      projectPath,
-    );
-    if (currentResult.code !== 0) {
-      throw new Error(`读取当前分支失败: ${currentResult.output}`);
     }
 
     const branches = branchResult.output
@@ -155,7 +150,7 @@ const registerIpcHandlers = (): void => {
       .map((item) => item.trim())
       .filter(Boolean);
 
-    const current = currentResult.output.trim();
+    const current = await currentGitBranch(projectPath);
     return { branches, current };
   });
 
@@ -163,7 +158,7 @@ const registerIpcHandlers = (): void => {
     'sender:switch-branch-and-pull',
     async (_, projectId: string): Promise<{ currentBranch: string }> => {
       const project = config.senderProjects.find((item) => item.id === projectId);
-      if (project?.kind !== 'deploy') throw new Error(`未找到部署项目: ${projectId}`);
+      if (!project) throw new Error(`未找到项目: ${projectId}`);
       if (!project.projectPath) throw new Error('项目路径为空，无法切换分支。');
       if (!project.gitBranch) throw new Error('未配置目标分支，无法切换分支。');
 
@@ -298,10 +293,11 @@ const registerIpcHandlers = (): void => {
 
   ipcMain.handle('sender:build-local-one', async (event, projectId: string) => {
     const project = config.senderProjects.find((item) => item.id === projectId);
-    if (project?.kind !== 'deploy') throw new Error(`未找到部署项目: ${projectId}`);
+    if (!project) throw new Error(`未找到项目: ${projectId}`);
     const log = (msg: string): void => {
       try { event.sender.send('sender:log', { projectId, msg }); } catch { /* window closed */ }
     };
+    if (project.kind === 'source') return { projectId, artifactPath: await sourceSender.packLocal(project, log) };
     return runBuildProjectOnly(project, log);
   });
 };

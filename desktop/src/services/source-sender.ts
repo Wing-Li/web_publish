@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { artifactDirectory, formatDateTimeForFileName, validateProjectBeforePack } from './project-artifact';
 import { packSource } from './source-pack/pack';
 import type { SourceProject, SourceInitRequest, SourceTarget, SourceTaskStatus } from '../shared/types';
 
@@ -90,6 +91,38 @@ export class SourceSender {
     return raw;
   }
 
+  private async createArtifact(project: SourceProject, archive: string, id: string, log: (msg: string) => void): Promise<string> {
+    await validateProjectBeforePack(project, log);
+    if (!path.isAbsolute(project.projectPath) || !(await fs.promises.stat(project.projectPath)).isDirectory()) {
+      throw new Error('请选择有效的本地项目目录。');
+    }
+    const outputDir = artifactDirectory(project);
+    await fs.promises.mkdir(outputDir, { recursive: true });
+    const prefix = Array.from(project.name.trim().replace(/[^\p{L}\p{N}._-]+/gu, '_')).slice(0, 45).join('') || 'source';
+    const name = prefix + '_source_' + formatDateTimeForFileName(new Date()) + '_' + id + '.zip';
+    const result = path.join(outputDir, name);
+    const temporary = result + '.tmp';
+    log('开始打包当前工作目录…\n');
+    const count = await packSource(project.projectPath, archive, this.stateDir, outputDir);
+    try {
+      await fs.promises.copyFile(archive, temporary, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+      await fs.promises.rename(temporary, result);
+    } finally {
+      await fs.promises.rm(temporary, { force: true });
+    }
+    log(`已打包 ${count} 个源码文件。\n本地 ZIP：${result}\n`);
+    return result;
+  }
+
+  async packLocal(project: SourceProject, log: (msg: string) => void): Promise<string> {
+    const dir = this.projectDir(project.id);
+    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+    const id = randomUUID();
+    const archive = path.join(dir, id + '.zip');
+    try { return await this.createArtifact(project, archive, id, log); }
+    finally { await fs.promises.rm(archive, { force: true }); }
+  }
+
   private async prepare(project: SourceProject, dir: string, receiver: string, log: (msg: string) => void) {
     if (!project.sourceTargetId) throw new Error('请选择接收端源码目录。');
     if (!project.name.trim()) throw new Error('请填写项目名称。');
@@ -102,9 +135,7 @@ export class SourceSender {
       try { previous = await this.readPending(dir); } catch { /* A fresh send can replace an unreadable record. */ }
     }
     try {
-      log('开始打包当前工作目录…\n');
-      const count = await packSource(project.projectPath, archive, this.stateDir);
-      log(`已打包 ${count} 个源码文件。\n`);
+      await this.createArtifact(project, archive, id, log);
       const { size } = await fs.promises.stat(archive);
       const pending: PendingSource = {
         id, receiver,

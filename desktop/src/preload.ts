@@ -25,8 +25,9 @@ const api = {
     ipcRenderer.invoke('app:pick-directory', initialPath),
   listGitBranches: (
     projectPath: string,
+    allowNonGit = false,
   ): Promise<{ branches: string[]; current: string }> =>
-    ipcRenderer.invoke('app:list-git-branches', projectPath),
+    ipcRenderer.invoke('app:list-git-branches', projectPath, allowNonGit),
   switchBranchAndPull: (
     projectId: string,
   ): Promise<{ currentBranch: string }> =>

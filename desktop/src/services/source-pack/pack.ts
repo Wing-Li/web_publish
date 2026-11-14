@@ -43,11 +43,14 @@ async function rootRules(root: string): Promise<string> {
 }
 
 /** 文件筛选沿用 Finder「项目打包」。读写 ZIP 均在 Electron 的 Node.js 运行时完成。 */
-export async function packSource(source: string, output: string, stateDir: string): Promise<number> {
+export async function packSource(source: string, output: string, stateDir: string, artifactDir: string): Promise<number> {
   if (!source || !path.isAbsolute(source)) throw new Error('请选择本地项目目录');
   const root = await fs.promises.realpath(source);
   const cache = await fs.promises.realpath(stateDir);
   if (within(cache, root)) throw new Error('项目目录位于源码发送缓存内');
+  const destination = await fs.promises.realpath(artifactDir);
+  const selectedDir = path.resolve(root, path.relative(source, artifactDir));
+  const defaultDir = path.join(root, '.web-publisher-artifacts');
   const ignored = rootIgnoreMatcher(await rootRules(root));
   const entries: { full: string; relative: string; stats: fs.Stats }[] = [];
 
@@ -55,10 +58,13 @@ export async function packSource(source: string, output: string, stateDir: strin
     for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
       if (entry.name === '.git') continue;
       const full = path.join(dir, entry.name);
+      if (full === defaultDir || full === selectedDir) continue;
       const relative = path.relative(root, full).split(path.sep).join('/');
       if (entry.name !== '.gitignore' && ignored(relative)) continue;
       const resolved = await checkedRealpath(root, full);
-      if (within(cache, resolved)) continue;
+      if (within(cache, resolved) || resolved === destination) continue;
+      // A previous output directory may no longer be selected, or the root itself may be the output.
+      if (/_source_\d{4}_\d{6}_[0-9a-f-]{36}\.zip(?:\.tmp)?$/i.test(path.basename(resolved))) continue;
       const stats = await fs.promises.stat(resolved);
       if (stats.isDirectory()) {
         if (!entry.isSymbolicLink() && !ignored(relative)) await visit(full);

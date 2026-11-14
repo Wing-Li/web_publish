@@ -4,10 +4,10 @@ export const isDeployProject = (project: SenderProject): project is DeployProjec
 export const isSourceProject = (project: SenderProject): project is SourceProject => project.kind === 'source';
 
 export function createProject(kind: SenderProject['kind'], id: string): SenderProject {
-  const common = { id, projectPath: '', receiverBaseUrl: 'http://127.0.0.1:17777', receiverToken: 'change-me' };
+  const common = { id, projectPath: '', artifactOutputDir: '', gitBranch: kind === 'deploy' ? 'main' : '', receiverBaseUrl: 'http://127.0.0.1:17777', receiverToken: 'change-me' };
   if (kind === 'source') return { ...common, kind, name: '新源码项目', sourceTargetId: '' };
   return { ...common, kind, name: '新部署项目', buildCommand: 'npm run build', buildOutputDir: 'dist',
-    artifactOutputDir: '', gitBranch: 'main', pagesProjectName: '', deployBranch: 'main' };
+    pagesProjectName: '', deployBranch: 'main' };
 }
 
 type SavedProject = Partial<Omit<DeployProject, 'kind'>> & {
@@ -33,13 +33,13 @@ export function normalizeProjects(rows: SavedProject[], hasPending: (id: string)
   return rows.flatMap((row, index): SenderProject[] => {
     const id = row.id?.trim() || crypto.randomUUID();
     const common = { id, name: row.name?.trim() || `项目 ${index + 1}`, projectPath: row.projectPath ?? '',
-      receiverBaseUrl: row.receiverBaseUrl ?? 'http://127.0.0.1:17777', receiverToken: row.receiverToken ?? 'change-me' };
-    const source: SourceProject = { ...common, kind: 'source', sourceTargetId: row.sourceTargetId ?? '' };
+      artifactOutputDir: row.artifactOutputDir ?? '', receiverBaseUrl: row.receiverBaseUrl ?? 'http://127.0.0.1:17777', receiverToken: row.receiverToken ?? 'change-me' };
+    const source: SourceProject = { ...common, kind: 'source', gitBranch: row.gitBranch ?? '', sourceTargetId: row.sourceTargetId ?? '' };
     if (row.kind === 'source' || (!row.kind && row.sourceOnly === true)) return [source];
 
     const deploy: DeployProject = { ...common, kind: 'deploy',
       buildCommand: row.buildCommand ?? 'npm run build', buildOutputDir: row.buildOutputDir ?? 'dist',
-      artifactOutputDir: row.artifactOutputDir ?? '', gitBranch: row.gitBranch ?? 'main',
+      gitBranch: row.gitBranch ?? 'main',
       pagesProjectName: row.pagesProjectName ?? '', deployBranch: row.deployBranch ?? 'main' };
     if (row.kind === 'deploy' || (!source.sourceTargetId && !hasPending(id))) return [deploy];
 

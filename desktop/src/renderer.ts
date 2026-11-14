@@ -22,7 +22,7 @@ import {
 import { appLayoutTemplate } from './ui/layout/app-layout';
 import { senderViewTemplate } from './ui/views/sender-view';
 import { receiverViewTemplate, ReceiverPage } from './ui/views/receiver-view';
-import { newSourcePanel, sourcePanelMarkup, sourceProjectForm, sourceReceiptRows, sourceSenderView, sourceTargetRows, SourcePanelState } from './ui/components/source-transfer';
+import { newSourcePanel, sourceTargetMarkup, sourceResultMarkup, sourceReceiptRows, sourceTargetRows, SourcePanelState } from './ui/components/source-transfer';
 
 declare global {
   interface Window {
@@ -48,7 +48,7 @@ let receiverPollTimer: ReturnType<typeof setInterval> | null = null;
 type Workspace = 'sender' | 'source' | 'receiver';
 let currentActiveTab: Workspace = 'sender';
 let receiverPage: ReceiverPage = 'deploy';
-let sourceProjectId = '';
+const openProjectConfigs = new Set<string>();
 
 // projectId → log text (max 50KB)
 const projectLogMap = new Map<string, string>();
@@ -105,13 +105,8 @@ const switchView = (target: Workspace): void => {
   }
   if (target !== 'receiver') {
     if (receiverPollTimer) { clearInterval(receiverPollTimer); receiverPollTimer = null; }
-    if (target === 'source') {
-      viewContainer.innerHTML = sourceSenderView(config.senderProjects.filter(isSourceProject), sourceProjectId);
-      showSourceProject();
-    } else {
-      viewContainer.innerHTML = senderViewTemplate;
-      renderProjectCards();
-    }
+    viewContainer.innerHTML = senderViewTemplate(target === 'source');
+    renderProjectCards();
   } else {
     viewContainer.innerHTML = receiverViewTemplate(receiverPage);
     fillReceiverForm();
@@ -276,8 +271,9 @@ const renderReceiverTasks = (tasks: DeploymentTask[]): void => {
 const renderProjectCards = (): void => {
   const wrap = $('projectsWrap');
   if (!wrap) return;
-  const projects = config.senderProjects.filter(isDeployProject);
-  wrap.innerHTML = projects.length ? '' : '<p class="rounded-3xl border border-dashed border-slate-300 p-8 text-sm text-slate-500">暂无部署项目</p>';
+  const source = currentActiveTab === 'source';
+  const projects = config.senderProjects.filter(source ? isSourceProject : isDeployProject);
+  wrap.innerHTML = projects.length ? '' : `<p class="rounded-3xl border border-dashed border-slate-300 p-8 text-sm text-slate-500">暂无${source ? '源码' : '部署'}项目</p>`;
   projects.forEach(p => {
     const card = createProjectCard(
       p, 
@@ -287,6 +283,19 @@ const renderProjectCards = (): void => {
       projectLogMap.get(p.id)
     );
     wrap.appendChild(card);
+    const details = card.querySelector<HTMLDetailsElement>('[data-project-config]');
+    details.open = openProjectConfigs.has(p.id);
+    details.ontoggle = () => {
+      if (!card.isConnected) return;
+      if (details.open) openProjectConfigs.add(p.id);
+      else openProjectConfigs.delete(p.id);
+    };
+    if (p.kind === 'source') {
+      let panel = sourcePanels.get(p.id);
+      if (!panel) { panel = newSourcePanel(); sourcePanels.set(p.id, panel); }
+      if (!panel.initialized) void refreshSourcePanel(p, panel, Boolean(p.sourceTargetId));
+      else updateSourcePanel(p);
+    }
   });
   updateOverview();
 };
@@ -297,6 +306,8 @@ const collectProjects = (): SenderProject[] =>
   config.senderProjects.map(p => {
     const connection = {
       name: readInput(projectInputId(p.id, 'name'), p.name),
+      gitBranch: readSelect(projectBranchSelectId(p.id), p.gitBranch),
+      artifactOutputDir: readInput(projectInputId(p.id, 'artifactOutputDir'), p.artifactOutputDir, true),
       projectPath: readInput(projectInputId(p.id, 'projectPath'), p.projectPath),
       receiverBaseUrl: readInput(projectInputId(p.id, 'receiverBaseUrl'), p.receiverBaseUrl, true),
       receiverToken: readInput(projectInputId(p.id, 'receiverToken'), p.receiverToken, true),
@@ -305,8 +316,6 @@ const collectProjects = (): SenderProject[] =>
     return { ...p, ...connection,
       buildCommand: readInput(projectInputId(p.id, 'buildCommand'), p.buildCommand),
       buildOutputDir: readInput(projectInputId(p.id, 'buildOutputDir'), p.buildOutputDir),
-      artifactOutputDir: readInput(projectInputId(p.id, 'artifactOutputDir'), p.artifactOutputDir, true),
-      gitBranch: readSelect(projectBranchSelectId(p.id), p.gitBranch),
       pagesProjectName: readInput(projectInputId(p.id, 'pagesProjectName'), p.pagesProjectName, true),
       deployBranch: readInput(projectInputId(p.id, 'deployBranch'), p.deployBranch),
     };
@@ -373,42 +382,34 @@ const fillReceiverForm = (): void => {
   if (targets) targets.innerHTML = sourceTargetRows(config.receiver.sourceTargets);
 };
 
-const showSourceProject = (): void => {
-  const form = $('sourceProjectForm');
-  const project = config.senderProjects.find(p => p.id === sourceProjectId);
-  if (!form || project?.kind !== 'source') return;
-  form.innerHTML = sourceProjectForm(project);
-  let panel = sourcePanels.get(project.id);
-  if (!panel) {
-    panel = newSourcePanel();
-    sourcePanels.set(project.id, panel);
-  }
-  if (panel.sending || !project.projectPath) updateSourcePanel(project);
-  else void refreshSourcePanel(project, panel);
-};
-
 const updateSourcePanel = (project: SourceProject): void => {
   const card = document.getElementById(`card-${project.id}`);
-  const wrap = card?.querySelector<HTMLElement>('[data-source-panel]');
-  if (!wrap) return;
   const panel = sourcePanels.get(project.id);
-  if (!panel) return;
-  wrap.innerHTML = sourcePanelMarkup(project, panel, !!projectBusyMap.get(project.id));
-  const log = wrap.querySelector('pre');
-  if (log) log.scrollTop = log.scrollHeight;
+  if (!card || !panel) return;
+  const busy = !!projectBusyMap.get(project.id);
+  card.querySelector('[data-source-target]').innerHTML = sourceTargetMarkup(project, panel, busy);
+  card.querySelector('[data-source-result]').innerHTML = sourceResultMarkup(project, panel);
+  const send = card.querySelector<HTMLButtonElement>('[data-action="source-send"]');
+  send.textContent = panel.sending ? '正在发送…' : panel.pending ? '重新打包并发送' : '打包并发送';
+  send.disabled = busy || panel.loading || !project.projectPath || panel.pending === undefined ||
+    !panel.targets.some(t => t.id === project.sourceTargetId);
+  const retry = card.querySelector<HTMLButtonElement>('[data-action="source-retry"]');
+  retry.hidden = !panel.pending;
+  retry.disabled = busy;
 };
 
 const errorText = (err: unknown): string => err instanceof Error ? err.message : String(err);
 
-const refreshSourcePanel = async (project: SourceProject, panel: SourcePanelState): Promise<void> => {
+const refreshSourcePanel = async (project: SourceProject, panel: SourcePanelState, loadTargets = true): Promise<void> => {
   const request = ++panel.request;
   const currentPanelProject = (): SourceProject | undefined => {
     if (sourcePanels.get(project.id) !== panel || panel.request !== request) return;
     return config.senderProjects.filter(isSourceProject).find(p => p.id === project.id);
   };
-  panel.loading = true;
+  panel.initialized = true;
+  panel.loading = loadTargets;
   panel.targets = [];
-  panel.notice = '';
+  panel.notice = loadTargets ? '' : '发送前请刷新并选择接收目录。';
   panel.hasRootIgnore = undefined;
   updateSourcePanel(project);
   const info = window.desktopApi.getSourceInfo(project.id, project.projectPath).then(result => {
@@ -418,7 +419,7 @@ const refreshSourcePanel = async (project: SourceProject, panel: SourcePanelStat
     panel.pending = result.pending;
     updateSourcePanel(current);
   });
-  const targets = window.desktopApi.getSourceTargets(project).then(rows => {
+  const targets = loadTargets && window.desktopApi.getSourceTargets(project).then(rows => {
     const current = currentPanelProject();
     if (!current) return;
     panel.targets = rows;
@@ -447,7 +448,7 @@ const runSourceSend = async (project: SourceProject, panel: SourcePanelState, re
   panel.sending = true;
   panel.error = '';
   panel.finalPath = '';
-  panel.log = retry ? '正在继续原任务…\n' : '正在准备发送…\n';
+  appendLog(project.id, retry ? '正在继续原任务…\n' : '正在准备发送…\n');
   setBusy(project.id, true);
   updateSourcePanel(project);
   try {
@@ -460,7 +461,7 @@ const runSourceSend = async (project: SourceProject, panel: SourcePanelState, re
     panel.error = errorText(err);
     const info = await window.desktopApi.getSourceInfo(project.id, project.projectPath).catch((): undefined => undefined);
     panel.pending = info?.pending;
-    showToast('源码发送失败，请查看项目中的错误详情', 'error');
+    handleError(err, project.id);
   } finally {
     panel.sending = false;
     setBusy(project.id, false);
@@ -559,8 +560,6 @@ const setBusy = (projectId: string, busy: boolean): void => {
   if (!busy) {
     config = collectConfig();
     renderProjectCards();
-    const p = config.senderProjects.find(p => p.id === projectId);
-    if (p?.kind === 'source' && currentActiveTab === 'source') updateSourcePanel(p);
   }
 };
 
@@ -578,20 +577,21 @@ const loadBranchesForProject = async (projectId: string, projectPath: string): P
     branchRuntimeMap.delete(projectId);
     return;
   }
+  const initial = config.senderProjects.find(p => p.id === projectId);
+  if (!initial) return;
+  const result = await window.desktopApi.listGitBranches(projectPath.trim(), initial.kind === 'source' && !initial.gitBranch);
   const project = config.senderProjects.find(p => p.id === projectId);
-  if (project?.kind !== 'deploy') return;
-
-  const result = await window.desktopApi.listGitBranches(projectPath.trim());
+  if (!project || project.projectPath !== projectPath) return;
   const branches = [...result.branches];
   if (result.current && !branches.includes(result.current)) branches.unshift(result.current);
   branchRuntimeMap.set(projectId, { branches, current: result.current });
-  if (branches.length > 0 && (!project.gitBranch || !branches.includes(project.gitBranch))) {
+  if (branches.length > 0 && (!project.gitBranch || (project.kind === 'deploy' && !branches.includes(project.gitBranch)))) {
     project.gitBranch = result.current || branches[0];
   }
 };
 
 const preloadAllBranches = async (): Promise<void> => {
-  for (const p of config.senderProjects.filter(isDeployProject)) {
+  for (const p of config.senderProjects) {
     try {
       await loadBranchesForProject(p.id, p.projectPath);
     } catch (err) {
@@ -741,7 +741,7 @@ const bindEvents = (): void => {
     project.name = name;
     config = collectConfig();
     config.senderProjects.push(project);
-    if (project.kind === 'source') sourceProjectId = project.id;
+    openProjectConfigs.add(project.id);
     createDialog.close();
     switchView(project.kind === 'source' ? 'source' : 'sender');
     showToast('项目已创建，配置完成后可保存', 'success');
@@ -753,8 +753,7 @@ const bindEvents = (): void => {
       setGlobalBusy(true);
       config = await window.desktopApi.updateConfig(collectConfig());
       await preloadAllBranches();
-      if (currentActiveTab === 'sender') renderProjectCards();
-      if (currentActiveTab === 'source') switchView('source');
+      renderProjectCards();
       showToast('所有配置已成功保存', 'success');
     } catch (err) { handleError(err); }
     finally { setGlobalBusy(false); }
@@ -781,13 +780,14 @@ const bindEvents = (): void => {
 
       config = result.config;
       sourcePanels.clear();
-      sourceProjectId = '';
+      openProjectConfigs.clear();
+      branchRuntimeMap.clear();
       setModeRadio(config.mode);
       currentActiveTab = config.mode === 'receiver' ? 'receiver' : 'sender';
       switchView(currentActiveTab);
       applyModeVisibility(config.mode);
       await preloadAllBranches();
-      if (currentActiveTab === 'sender') renderProjectCards();
+      renderProjectCards();
       showToast('配置已导入并保存', 'success');
     } catch (err) { handleError(err); }
     finally { setGlobalBusy(false); }
@@ -814,6 +814,11 @@ const bindEvents = (): void => {
   };
   viewContainer.onchange = e => {
     const select = e.target as HTMLSelectElement;
+    if (select.dataset.projectBranch) {
+      config = collectConfig();
+      renderProjectCards();
+      return;
+    }
     if (!select.dataset.sourceSelect) return;
     const project = config.senderProjects.find(p => p.id === select.dataset.sourceSelect);
     if (project?.kind !== 'source') return;
@@ -901,11 +906,6 @@ const bindEvents = (): void => {
     if (action.startsWith('source-')) {
       const project = config.senderProjects.find(p => p.id === projectId);
       if (project?.kind !== 'source') return;
-      if (action === 'source-open') {
-        sourceProjectId = sourceProjectId === projectId ? '' : projectId;
-        switchView('source');
-        return;
-      }
       const panel = sourcePanels.get(projectId);
       if (panel && action === 'source-refresh') {
         await refreshSourcePanel(project, panel);
@@ -920,33 +920,33 @@ const bindEvents = (): void => {
     if (action === 'clear-log') { clearLog(projectId); return; }
     if (action === 'remove') {
       sourcePanels.delete(projectId);
-      if (sourceProjectId === projectId) sourceProjectId = '';
+      openProjectConfigs.delete(projectId);
+      branchRuntimeMap.delete(projectId);
       config.senderProjects = config.senderProjects.filter(p => p.id !== projectId);
-      if (currentActiveTab === 'source') switchView('source');
-      else renderProjectCards();
+      renderProjectCards();
       showToast('项目已从列表移除', 'info');
       return;
     }
     if (action === 'pick-path') {
       const p = config.senderProjects.find(x => x.id === projectId);
       if (!p) return;
-      const path = await window.desktopApi.pickDirectory(p.projectPath);
+      const previousPath = p.projectPath;
+      const path = await window.desktopApi.pickDirectory(previousPath);
       if (path) {
         p.projectPath = path;
-        if (p.kind === 'source') {
-          switchView('source');
-        } else {
-          try { await loadBranchesForProject(projectId, path); }
-          catch (err) { branchRuntimeMap.set(projectId, { branches: [], current: '', error: errorText(err) }); }
-          renderProjectCards();
-        }
+        const panel = sourcePanels.get(projectId);
+        if (panel) { ++panel.request; panel.initialized = false; }
+        if (p.kind === 'source' && path !== previousPath) p.gitBranch = '';
+        try { await loadBranchesForProject(projectId, path); }
+        catch (err) { branchRuntimeMap.set(projectId, { branches: [], current: '', error: errorText(err) }); }
+        renderProjectCards();
         showToast('路径已更新', 'success');
       }
       return;
     }
     if (action === 'pick-artifact-path') {
       const p = config.senderProjects.find(x => x.id === projectId);
-      if (p?.kind !== 'deploy') return;
+      if (!p) return;
       const path = await window.desktopApi.pickDirectory(p.artifactOutputDir);
       if (path) {
         p.artifactOutputDir = path;
@@ -987,18 +987,21 @@ const bindEvents = (): void => {
       return;
     }
     if (action === 'build-one') {
+      const deploy = config.senderProjects.find(p => p.id === projectId)?.kind === 'deploy';
       try {
         config = await window.desktopApi.updateConfig(collectConfig());
         setBusy(projectId, true);
-        startProjectSteps(projectId);
-        setStep(projectId, 'build', 'running');
-        showToast('正在构建项目...', 'info');
+        if (deploy) {
+          startProjectSteps(projectId);
+          setStep(projectId, 'build', 'running');
+        }
+        showToast('正在打包项目…', 'info');
         const res = await window.desktopApi.buildLocalOne(projectId);
         setStep(projectId, 'build', 'done');
         setStep(projectId, 'zip',   'done');
         showToast('本地打包成功 ✓', 'success');
         setTimeout(() => clearProjectSteps(projectId), 2000);
-        window.desktopApi.openFolder(res.artifactPath.replace(/\/[^/]+$/, ''));
+        window.desktopApi.openFolder(res.artifactPath.replace(/[/\\][^/\\]+$/, ''));
       } catch (err) {
         setStep(projectId, 'build', 'failed');
         handleError(err, projectId);
@@ -1054,17 +1057,7 @@ const init = async (): Promise<void> => {
   window.desktopApi.offSenderLog();
   window.desktopApi.onSenderLog(({ projectId, msg }) => appendLog(projectId, msg));
   window.desktopApi.offSourceLog();
-  window.desktopApi.onSourceLog(({ projectId, msg }) => {
-    const panel = sourcePanels.get(projectId);
-    if (!panel) return;
-    panel.log = (panel.log + msg.trimEnd() + '\n').slice(-LOG_MAX_BYTES);
-    const output = document.getElementById(`card-${projectId}`)?.querySelector<HTMLElement>('[data-source-log]');
-    if (output) {
-      output.textContent = panel.log;
-      output.classList.remove('hidden');
-      output.scrollTop = output.scrollHeight;
-    }
-  });
+  window.desktopApi.onSourceLog(({ projectId, msg }) => appendLog(projectId, msg));
 
   // Config
   config = await window.desktopApi.getConfig();
@@ -1078,7 +1071,7 @@ const init = async (): Promise<void> => {
   applyModeVisibility(config.mode);
   
   await preloadAllBranches();
-  if (currentActiveTab === 'sender') renderProjectCards();
+  renderProjectCards();
   
   bindEvents();
 

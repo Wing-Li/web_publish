@@ -107,3 +107,9 @@ export const runCommandStrict = async (
   }
   return result.output.trim();
 };
+
+export const currentGitBranch = async (cwd: string): Promise<string> => {
+  const branch = await runCommand('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd);
+  if (branch.code === 0) return branch.output.trim();
+  return runCommandStrict('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, '无法读取当前 Git 分支');
+};

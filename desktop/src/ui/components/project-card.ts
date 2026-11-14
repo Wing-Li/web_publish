@@ -1,4 +1,4 @@
-import { DeployProject, StepStatus } from '../../shared/types';
+import { DeployProject, SenderProject, StepStatus } from '../../shared/types';
 import { esc } from '../utils/dom';
 
 export interface BranchRuntime {
@@ -224,29 +224,21 @@ export const renderDeploySteps = (steps: DeployStep[]): string => {
   `;
 };
 
-const projectInputId = (pid: string, field: keyof DeployProject): string =>
-  `p__${pid}__${field}`;
-const projectBranchSelectId = (pid: string): string => `p__${pid}__branchSel`;
+const projectInputId = (pid: string, field: keyof DeployProject): string => esc(`p__${pid}__${field}`);
+const projectBranchSelectId = (pid: string): string => esc(`p__${pid}__branchSel`);
 
-const renderBranchSelect = (project: DeployProject, rt?: BranchRuntime): string => {
-  const opts = rt?.branches ?? (project.gitBranch ? [project.gitBranch] : []);
-  const disabled = project.projectPath.trim() ? '' : 'disabled';
-  
-  if (opts.length === 0) {
-    return `<select id="${projectBranchSelectId(project.id)}" class="form-select text-slate-400" ${disabled}>
-              <option value="">请先选择项目目录</option>
-            </select>`;
-  }
-  
-  return `
-    <select id="${projectBranchSelectId(project.id)}" class="form-select" ${disabled}>
-      ${opts.map(b => `<option value="${esc(b)}" ${b === project.gitBranch ? 'selected' : ''}>${esc(b)}</option>`).join('')}
-    </select>
-  `;
+const renderBranchSelect = (project: SenderProject, rt?: BranchRuntime): string => {
+  const branches = [...(rt?.branches ?? [])];
+  if (project.gitBranch && !branches.includes(project.gitBranch)) branches.push(project.gitBranch);
+  const placeholder = project.projectPath ? '当前工作目录' : '请先选择项目目录';
+  return `<select id="${projectBranchSelectId(project.id)}" data-project-branch="${esc(project.id)}" class="form-select" ${project.projectPath ? '' : 'disabled'}>
+    ${branches.length ? '' : `<option value="">${placeholder}</option>`}
+    ${branches.map(b => `<option value="${esc(b)}" ${b === project.gitBranch ? 'selected' : ''}>${esc(b)}</option>`).join('')}
+  </select>`;
 };
 
 export const createProjectCard = (
-  project: DeployProject,
+  project: SenderProject,
   rt?: BranchRuntime, 
   busy = false, 
   steps?: DeployStep[],
@@ -267,7 +259,7 @@ export const createProjectCard = (
         <div class="flex items-center gap-2 mb-1">
           <div class="w-2 h-2 rounded-full ${busy ? 'bg-teal-500 animate-ping' : 'bg-slate-300'}"></div>
           <h3 class="font-bold text-slate-800 truncate text-lg tracking-tight">${esc(project.name || '未命名项目')}</h3>
-          <span class="px-2 py-0.5 rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 uppercase tracking-widest">${project.id.split('_').pop()}</span>
+          <span class="px-2 py-0.5 rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 uppercase tracking-widest">${esc(project.id.split('_').pop())}</span>
         </div>
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
           <div class="flex items-center gap-1">
@@ -282,15 +274,16 @@ export const createProjectCard = (
       </div>
       
       <div class="flex items-center gap-2 shrink-0">
-        <button class="btn-secondary btn-sm h-9 px-4" data-action="build-one" data-id="${project.id}" ${busy ? 'disabled' : ''}>
+        <button class="btn-secondary btn-sm h-9 px-4" data-action="build-one" data-id="${esc(project.id)}" ${busy ? 'disabled' : ''}>
           ${busy ? '<span class="spinner w-3 h-3 border-2 mr-2"></span>' : ''} 本地打包
         </button>
-        <button class="btn-primary btn-sm h-9 px-4" data-action="deploy-one" data-id="${project.id}" ${busy ? 'disabled' : ''}>
-          ${busy ? '<span class="spinner w-3 h-3 border-2 mr-2"></span>' : ''} 部署
+        <button class="btn-primary btn-sm h-9 px-4" data-action="${project.kind === 'deploy' ? 'deploy-one' : 'source-send'}" data-id="${esc(project.id)}" ${busy ? 'disabled' : ''}>
+          ${busy ? '<span class="spinner w-3 h-3 border-2 mr-2"></span>' : ''} ${project.kind === 'deploy' ? '部署' : '打包并发送'}
         </button>
+        ${project.kind === 'source' ? `<button class="btn-secondary btn-sm h-9 px-4" data-action="source-retry" data-id="${esc(project.id)}" hidden>继续原任务</button>` : ''}
         <div class="h-6 w-px bg-slate-200 mx-1"></div>
         <button class="w-9 h-9 flex items-center justify-center rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors" 
-                data-action="remove" data-id="${project.id}" ${busy ? 'disabled' : ''} title="删除项目">
+                data-action="remove" data-id="${esc(project.id)}" ${busy ? 'disabled' : ''} title="删除项目">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
         </button>
       </div>
@@ -305,7 +298,7 @@ export const createProjectCard = (
             <p>分支冲突：${mismatch}</p>
           </div>
           <button class="text-[11px] font-bold text-amber-700 hover:text-amber-900 underline decoration-2 underline-offset-4 whitespace-nowrap"
-                  data-action="sync-branch" data-id="${project.id}" ${busy ? 'disabled' : ''}>
+                  data-action="sync-branch" data-id="${esc(project.id)}" ${busy ? 'disabled' : ''}>
             切换并同步
           </button>
         </div>` : ''}
@@ -323,7 +316,7 @@ export const createProjectCard = (
     </div>
 
     <!-- Config Accordion -->
-    <details class="group/config">
+    <details class="group/config" data-project-config="${esc(project.id)}">
       <summary class="flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 cursor-pointer list-none transition-colors border border-dashed border-slate-200">
         <span class="text-[11px] font-bold text-slate-400 tracking-widest group-open/config:hidden">显示详细配置</span>
         <span class="text-[11px] font-bold text-slate-400 tracking-widest hidden group-open/config:inline">隐藏配置信息</span>
@@ -351,9 +344,10 @@ export const createProjectCard = (
               <label class="text-[11px] font-black text-slate-400 uppercase tracking-wider pl-1">项目所在路径</label>
               <div class="flex gap-2">
                 <input id="${projectInputId(project.id, 'projectPath')}" class="flex-1 form-input-new bg-white/50 text-slate-500 font-mono text-[11px]" value="${esc(project.projectPath)}" readonly title="${esc(project.projectPath)}" />
-                <button class="btn-secondary h-10 px-4 shrink-0 text-[11px] font-bold" data-action="pick-path" data-id="${project.id}">选择路径</button>
+                <button class="btn-secondary h-10 px-4 shrink-0 text-[11px] font-bold" data-action="pick-path" data-id="${esc(project.id)}">选择路径</button>
               </div>
             </div>
+            ${project.kind === 'deploy' ? `
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-slate-400 uppercase tracking-wider pl-1">执行构建命令</label>
               <input id="${projectInputId(project.id, 'buildCommand')}" class="form-input-new font-mono text-slate-600" value="${esc(project.buildCommand)}" placeholder="例如：npm run build" />
@@ -361,20 +355,20 @@ export const createProjectCard = (
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-slate-400 uppercase tracking-wider pl-1">构建产物目录</label>
               <input id="${projectInputId(project.id, 'buildOutputDir')}" class="form-input-new font-mono text-slate-600" value="${esc(project.buildOutputDir)}" placeholder="例如：dist 或 out" />
-            </div>
+            </div>` : ''}
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-slate-400 uppercase tracking-wider pl-1">Git 分支设定</label>
               <div class="flex gap-2">
                 ${renderBranchSelect(project, rt)}
-                <button class="btn-secondary h-10 px-4 shrink-0 text-[11px] font-bold" data-action="refresh-branches" data-id="${project.id}">刷新分支</button>
+                <button class="btn-secondary h-10 px-4 shrink-0 text-[11px] font-bold" data-action="refresh-branches" data-id="${esc(project.id)}">刷新分支</button>
               </div>
             </div>
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-slate-400 uppercase tracking-wider pl-1">打包产物输出目录 (可选)</label>
               <div class="flex gap-2">
                 <input id="${projectInputId(project.id, 'artifactOutputDir')}" class="flex-1 form-input-new bg-white/50 text-slate-500 font-mono text-[11px]" value="${esc(project.artifactOutputDir)}"
-                       placeholder="留空则使用默认目录" readonly title="${esc(project.artifactOutputDir)}" />
-                <button class="btn-secondary h-10 px-4 shrink-0 text-[11px] font-bold" data-action="pick-artifact-path" data-id="${project.id}">选择目录</button>
+                       placeholder="默认：项目目录下的 .web-publisher-artifacts/" readonly title="${esc(project.artifactOutputDir)}" />
+                <button class="btn-secondary h-10 px-4 shrink-0 text-[11px] font-bold" data-action="pick-artifact-path" data-id="${esc(project.id)}">选择目录</button>
               </div>
             </div>
           </div>
@@ -384,7 +378,7 @@ export const createProjectCard = (
         <div>
           <h4 class="flex items-center gap-2 text-xs font-bold text-slate-800 uppercase tracking-widest mb-4">
             <span class="w-1 h-3 rounded-full bg-blue-500"></span>
-            远程部署配置
+            ${project.kind === 'deploy' ? '远程部署配置' : '远端接收配置'}
           </h4>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6 bg-blue-50/30 p-5 rounded-2xl border border-blue-100/50">
             <div class="flex flex-col gap-1.5">
@@ -395,6 +389,7 @@ export const createProjectCard = (
               <label class="text-[11px] font-black text-blue-400 uppercase tracking-wider pl-1">接收端鉴权 Token</label>
               <input id="${projectInputId(project.id, 'receiverToken')}" data-source-connection="${esc(project.id)}" type="password" class="form-input-new font-mono text-blue-700" value="${esc(project.receiverToken)}" placeholder="输入访问令牌" />
             </div>
+            ${project.kind === 'deploy' ? `
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-blue-400 uppercase tracking-wider pl-1">Cloudflare Pages 项目名</label>
               <input id="${projectInputId(project.id, 'pagesProjectName')}" class="form-input-new text-blue-700" value="${esc(project.pagesProjectName)}"
@@ -404,29 +399,30 @@ export const createProjectCard = (
               <label class="text-[11px] font-black text-blue-400 uppercase tracking-wider pl-1">目标部署分支 (默认 main)</label>
               <input id="${projectInputId(project.id, 'deployBranch')}" class="form-input-new text-blue-700"
                      value="${esc(project.deployBranch)}" placeholder="main" />
-            </div>
+            </div>` : '<div data-source-target class="md:col-span-2"></div>'}
           </div>
         </div>
       </div>
     </details>
 
+    ${project.kind === 'source' ? '<div data-source-result></div>' : ''}
     <!-- Logs Panel -->
     <div class="project-log-area ${logContent ? '' : 'hidden'} mt-2 transition-all duration-300">
       <div class="flex flex-col rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
         <div class="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-100">
           <div class="flex items-center gap-2 text-[11px] font-black text-slate-500 uppercase tracking-widest">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg>
-            项目构建日志
+            ${project.kind === 'deploy' ? '项目构建日志' : '源码打包与发送日志'}
           </div>
           <button class="text-[10px] font-bold text-slate-400 hover:text-rose-500 uppercase tracking-widest transition-colors flex items-center gap-1"
-                  data-action="clear-log" data-id="${project.id}">
+                  data-action="clear-log" data-id="${esc(project.id)}">
             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
             清除日志
           </button>
         </div>
         <div class="log-output bg-slate-950 text-slate-300 p-4 max-h-72 overflow-y-auto
                     font-mono m-0 border-0 space-y-3"
-             id="log-${project.id}">${renderProjectLog(logContent)}</div>
+             id="log-${esc(project.id)}">${renderProjectLog(logContent)}</div>
       </div>
     </div>
   `;

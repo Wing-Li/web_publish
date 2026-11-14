@@ -1,6 +1,7 @@
 import { rootIgnoreMatcher } from '../src/services/source-pack/gitignore';
 import { normalizeProjects } from '../src/shared/projects';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
@@ -8,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { ReceiverServer } from '../src/services/receiver-server';
+import { extractSourceZip } from '../src/services/source-extract';
 import { SourceSender } from '../src/services/source-sender';
 import { ReceiverConfig, SourceProject } from '../src/shared/types';
 
@@ -34,7 +36,7 @@ test('旧配置按用途迁移，重试任务保留原 ID，重新加载后类�
   const rows = [
     { id: 'only-deploy', buildCommand: 'custom build' },
     { id: 'only-source', sourceOnly: true },
-    { id: 'both', sourceTargetId: 'inbox', receiverToken: 'fixture' },
+    { id: 'both', sourceTargetId: 'inbox', receiverToken: 'fixture', gitBranch: 'release', artifactOutputDir: 'zips' },
     { id: 'interrupted' },
     { id: 'both-deploy' },
   ];
@@ -46,8 +48,41 @@ test('旧配置按用途迁移，重试任务保留原 ID，重新加载后类�
   ]);
   assert.equal(migrated.some(p => p.kind === 'source' && 'buildCommand' in p), false);
   assert.equal(migrated.some(p => p.kind === 'deploy' && 'sourceTargetId' in p), false);
+  assert.deepEqual(migrated.filter(p => ['both-deploy-deploy', 'both'].includes(p.id))
+    .map(p => [p.gitBranch, p.artifactOutputDir]), [['release', 'zips'], ['release', 'zips']]);
   assert.deepEqual(normalizeProjects(migrated, () => true), migrated);
   assert.deepEqual(normalizeProjects([], () => true), []);
+});
+
+test('源码本地打包使用所选分支和 ZIP 输出目录，普通目录以及项目根目录输出均可用', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-local-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = path.join(root, 'repo');
+  await fs.mkdir(workspace);
+  await fs.writeFile(path.join(workspace, 'hello.txt'), '未提交的源码');
+  const project: SourceProject = {
+    id: 'local', name: '本地示例', projectPath: workspace, kind: 'source', gitBranch: '',
+    artifactOutputDir: '', receiverBaseUrl: '', receiverToken: '', sourceTargetId: '',
+  };
+  const sender = new SourceSender(path.join(root, 'cache'));
+  const log = (): void => { /* 离线打包 */ };
+  const defaultZip = await sender.packLocal(project, log);
+  assert.equal(path.dirname(defaultZip), path.join(workspace, '.web-publisher-artifacts'));
+  execFileSync('git', ['init', '-q', '-b', 'main', workspace]);
+  await assert.rejects(sender.packLocal({ ...project, gitBranch: 'release' }, log), /当前分支为 main，与配置 release 不一致/);
+  project.gitBranch = 'main';
+  project.artifactOutputDir = 'packages';
+  const selectedZip = await sender.packLocal(project, log);
+  assert.equal(path.dirname(selectedZip), path.join(workspace, 'packages'));
+  project.artifactOutputDir = workspace;
+  await sender.packLocal(project, log);
+  const rootZip = await sender.packLocal(project, log);
+  const extracted = path.join(root, 'extracted');
+  await fs.mkdir(extracted);
+  await extractSourceZip(rootZip, extracted, 1024);
+  assert.deepEqual(await fs.readdir(extracted), ['hello.txt']);
+  assert.equal(await fs.readFile(path.join(extracted, 'hello.txt'), 'utf8'), '未提交的源码');
+  assert.equal(sender.getPending(project.id), false);
 });
 
 test('源码发送中断后跨重启续传原快照；主动再次发送产生独立版本', async t => {
@@ -64,7 +99,7 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   const project: SourceProject = {
     id: 'app', name: '示例项目', projectPath: workspace, sourceTargetId: 'inbox',
     receiverBaseUrl: `http://${config.host}:${config.port}`, receiverToken: config.authToken,
-    kind: 'source',
+    kind: 'source', gitBranch: 'main', artifactOutputDir: 'archives',
   };
   const realFetch = globalThis.fetch;
   let receiver = new ReceiverServer(() => config);
@@ -74,9 +109,8 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
     try { await receiver.stop(); } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
   await fs.mkdir(path.join(workspace, 'src'), { recursive: true });
-  await fs.mkdir(path.join(workspace, '.git'));
+  execFileSync('git', ['init', '-q', '-b', 'main', workspace]);
   await fs.mkdir(destination);
-  await fs.writeFile(path.join(workspace, '.git', 'HEAD'), 'test');
   await fs.writeFile(path.join(workspace, '.gitignore'), '*.local\n');
   await fs.writeFile(path.join(workspace, 'dev.local'), 'excluded');
   await fs.writeFile(path.join(workspace, 'src', '.gitignore'), 'main.txt\n');
@@ -104,6 +138,8 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
     return response;
   };
   const log = (): void => { /* 仅验证最终产物和实际传输。 */ };
+  await assert.rejects(sender.send({ ...project, gitBranch: 'other' }, false, log), /与配置 other 不一致/);
+  assert.equal(sender.getPending(project.id), false);
   await assert.rejects(sender.send(project, false, log), /回执丢失/);
   assert.equal(sender.getPending(project.id), true);
   assert.equal((await receiver.getSourceReceipts()).length, 0);
@@ -112,7 +148,14 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   sender = new SourceSender(state);
   await receiver.start();
   await fs.writeFile(path.join(workspace, 'src', 'main.txt'), '第二次发送');
-  const first = await sender.send(project, true, log);
+  const outputs = path.join(workspace, project.artifactOutputDir);
+  const [originalZip] = await fs.readdir(outputs);
+  assert.ok(originalZip.endsWith('.zip'));
+  await fs.unlink(path.join(outputs, originalZip));
+  const changedOutput = path.join(root, 'after-retry');
+  const first = await sender.send({ ...project, gitBranch: 'other', artifactOutputDir: changedOutput }, true, log);
+  await assert.rejects(fs.stat(changedOutput), { code: 'ENOENT' });
+  assert.deepEqual(await fs.readdir(outputs), []);
   assert.deepEqual(putIndexes, [0, 1]);
   assert.equal(taskIds.size, 1);
   assert.equal(sender.getPending(project.id), false);
@@ -121,6 +164,7 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   assert.deepEqual((await fs.readdir(first.finalPath)).sort(), ['.gitignore', 'assets.bin', 'src']);
   globalThis.fetch = realFetch;
   const second = await sender.send(project, false, log);
+  assert.equal((await fs.readdir(outputs)).length, 1);
   assert.notEqual(second.finalPath, first.finalPath);
   assert.equal(await fs.readFile(path.join(second.finalPath, 'src', 'main.txt'), 'utf8'), '第二次发送');
   assert.equal(await fs.readFile(originalFile, 'utf8'), '第一次发送');

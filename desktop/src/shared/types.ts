@@ -4,6 +4,8 @@ interface ProjectConnection {
   id: string;
   name: string;
   projectPath: string;
+  gitBranch: string;
+  artifactOutputDir: string;
   receiverBaseUrl: string;
   receiverToken: string;
 }
@@ -12,8 +14,6 @@ export interface DeployProject extends ProjectConnection {
   kind: 'deploy';
   buildCommand: string;
   buildOutputDir: string;
-  artifactOutputDir: string;
-  gitBranch: string;
   pagesProjectName: string;
   deployBranch: string;
 }
