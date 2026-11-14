@@ -140,8 +140,20 @@ export const receiverViewTemplate = (page: ReceiverPage): string => `
               <li class="flex gap-4">
                 <span class="flex-shrink-0 w-6 h-6 rounded-full bg-white border border-amber-200 text-[11px] font-bold text-amber-700 flex items-center justify-center shadow-sm">1</span>
                 <div class="text-xs text-amber-900 leading-relaxed">
-                  <p class="font-bold mb-1.5 text-[13px]">Wrangler 准备</p>
-                  <p class="mb-1">首先，验证本机已安装 Wrangler 命令行工具：</p>
+                  <p class="font-bold mb-1.5 text-[13px]">配置 Cloudflare Pages 部署凭据并检查 Wrangler</p>
+                  <ol class="list-decimal pl-4 space-y-1 mb-2">
+                    <li>登录 Cloudflare 控制台，进入「我的个人资料 → API 令牌」，点击「创建令牌」并填写令牌名称。</li>
+                    <li>在「权限策略」中任选一种方式。
+                      <ul class="list-disc pl-4 space-y-1 mt-1">
+                        <li>接收端只部署 Pages 时，推荐选<strong>「从头开始（Custom）」</strong>，在「权限」中只添加<strong>账户 → Cloudflare Pages → 编辑</strong>。</li>
+                        <li><strong>Edit Cloudflare Workers</strong> 模板可直接用于 Pages 部署，也会授予其他 Workers 相关权限。</li>
+                      </ul>
+                    </li>
+                    <li>在「账户资源」中选择「包括 → 特定账户」，仅选中<strong>部署项目所在的账户</strong>。</li>
+                    <li>点击「继续查看摘要 → 创建令牌」，复制生成的令牌值，粘贴到接收端「Cloudflare 凭据」的 <strong>API Token</strong> 输入框。</li>
+                    <li>在 Cloudflare 控制台切换到刚才选定的账户，进入「Workers &amp; Pages → 账户详情（Account Details）」，复制 <strong>Account ID</strong>，粘贴到接收端「Cloudflare 凭据」的 <strong>Account ID</strong> 输入框。</li>
+                  </ol>
+                  <p class="mb-1">在接收端终端检查 Wrangler 版本。</p>
                   <code class="block bg-white/80 px-2 py-1 rounded border border-amber-200 font-mono text-[11px] mb-2 text-slate-800">npx wrangler --version</code>
                   <p class="mb-1">如果需要交互式登录（API Token 模式可跳过）：</p>
                   <code class="block bg-white/80 px-2 py-1 rounded border border-amber-200 font-mono text-[11px] text-slate-800">npx wrangler login</code>
@@ -153,8 +165,12 @@ export const receiverViewTemplate = (page: ReceiverPage): string => `
                   <p class="font-bold mb-1.5 text-[13px]">安装外网穿透 (Cloudflare Tunnel) <span class="font-normal text-[11px] text-amber-700 ml-1">—— 仅用于公网访问本地机器</span></p>
                   <p class="mb-1">使用 Homebrew 安装 cloudflared：</p>
                   <code class="block bg-white/80 px-2 py-1 rounded border border-amber-200 font-mono text-[11px] mb-2 text-slate-800">brew install cloudflared</code>
-                  <p class="mb-1">注册并启动系统服务（将 &lt;TOKEN&gt; 替换为控制台生成的 Token）：</p>
-                  <code class="block bg-white/80 px-2 py-1 rounded border border-amber-200 font-mono text-[11px] text-slate-800">sudo cloudflared service install &lt;TOKEN&gt;</code>
+                  <p class="mb-1">要获取 Tunnel Token，登录 Cloudflare 控制台，进入 <strong>Networking → Tunnels</strong>。</p>
+                  <ul class="list-disc pl-4 space-y-1 mb-2">
+                    <li><strong>已有隧道</strong>时，选中接收端要使用的隧道，在 <strong>Overview</strong> 中点击 <strong>Add a replica</strong>，选择 macOS 即可看到安装命令。</li>
+                    <li><strong>首次创建</strong>时，点击 <strong>Create Tunnel</strong>，输入名称并确认创建。在 <strong>Setup Environment</strong> 中选择 macOS 和接收端 Mac 的芯片架构，然后找到 <strong>Install and Run</strong> 下的安装命令。</li>
+                  </ul>
+                  <p>安装命令中，<code class="font-mono">sudo cloudflared service install</code> 后以 <code class="font-mono">eyJ</code> 开头的字符串就是这条隧道的 Token。复制控制台里的整条命令，在接收端 Mac 的终端执行，即可注册并启动隧道服务。</p>
                 </div>
               </li>
               <li class="flex gap-4">
@@ -168,36 +184,39 @@ export const receiverViewTemplate = (page: ReceiverPage): string => `
               <li class="flex gap-4">
                 <span class="flex-shrink-0 w-6 h-6 rounded-full bg-white border border-amber-200 text-[11px] font-bold text-amber-700 flex items-center justify-center shadow-sm">4</span>
                 <div class="text-xs text-amber-900 leading-relaxed">
-                  <p class="font-bold mb-1.5 text-[13px]">配置 Cloudflare 控制台路由</p>
-                  <ul class="list-disc pl-4 space-y-1 mt-1">
-                    <li>在 Zero Trust 控制台中，给 Tunnel 添加 <strong>Public Hostname</strong>。</li>
-                    <li>目标 Service 地址填写：<code class="font-mono bg-white/80 px-1.5 py-0.5 rounded border border-amber-200 text-[11px]">http://127.0.0.1:17777</code></li>
-                    <li>访问 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded border border-amber-200 text-[11px]">https://你的域名/healthz</code> 验证连通性。</li>
-                  </ul>
+                  <p class="font-bold mb-1.5 text-[13px]">配置 Cloudflare Tunnel 路由</p>
+                  <ol class="list-decimal pl-4 space-y-1">
+                    <li>在 Cloudflare 控制台的 <strong>Networking → Tunnels</strong> 选中接收端使用的隧道。打开「路由」，点击「添加路由」，类型选<strong>「已发布的应用程序」</strong>。</li>
+                    <li>填写子域名（如 <code>deploy</code>），选择已接入 Cloudflare 的域名。「路径」留空，让健康检查和上传请求都走这条路由。</li>
+                    <li>如果 cloudflared 和接收端在同一台 Mac 上，默认服务地址填 <code>http://127.0.0.1:17777</code>。若界面分栏显示，协议选 <strong>HTTP</strong>，地址填 <code>127.0.0.1:17777</code>。端口以接收端「服务设置」中的监听端口为准，填好后保存路由。</li>
+                  </ol>
                 </div>
               </li>
               <li class="flex gap-4">
                 <span class="flex-shrink-0 w-6 h-6 rounded-full bg-white border border-amber-200 text-[11px] font-bold text-amber-700 flex items-center justify-center shadow-sm">5</span>
                 <div class="text-xs text-amber-900 leading-relaxed">
-                  <p class="font-bold mb-1.5 text-[13px]">配置发送端地址</p>
-                  <p>在发送端项目配置中，将 <strong>接收端地址</strong> 改为 Tunnel 域名（如 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded border border-amber-200 text-[11px]">https://deploy.example.com</code>），Token 需保持一致。</p>
+                  <p class="font-bold mb-1.5 text-[13px]">启动接收服务并验证连通性</p>
+                  <ol class="list-decimal pl-4 space-y-1">
+                    <li>在接收端点击「启动服务」。用这台 Mac 的浏览器打开本机服务地址下的 <code>/healthz</code>，默认是 <code>http://127.0.0.1:17777/healthz</code>。看到 <code>{"ok":true}</code> 表示接收服务已就绪。</li>
+                    <li>在发送端浏览器打开 <code>https://你的完整子域名/healthz</code>，域名使用上一步保存的实际值。看到同样的 <code>{"ok":true}</code> 表示公网路由已连通。</li>
+                  </ol>
                 </div>
               </li>
               <li class="flex gap-4">
                 <span class="flex-shrink-0 w-6 h-6 rounded-full bg-white border border-amber-200 text-[11px] font-bold text-amber-700 flex items-center justify-center shadow-sm">6</span>
+                <div class="text-xs text-amber-900 leading-relaxed">
+                  <p class="font-bold mb-1.5 text-[13px]">配置发送端地址</p>
+                  <p>在发送端项目配置中，将 <strong>接收端地址</strong> 改为 Tunnel 域名（如 <code class="font-mono bg-white/80 px-1.5 py-0.5 rounded border border-amber-200 text-[11px]">https://deploy.example.com</code>），Token 填写接收端「服务设置」中的<strong>鉴权 Token</strong>。</p>
+                </div>
+              </li>
+              <li class="flex gap-4">
+                <span class="flex-shrink-0 w-6 h-6 rounded-full bg-white border border-amber-200 text-[11px] font-bold text-amber-700 flex items-center justify-center shadow-sm">7</span>
                 <div class="text-xs text-amber-900 leading-relaxed">
                   <p class="font-bold mb-1.5 text-[13px]">卸载与移除服务（不再使用时）</p>
                   <p class="mb-1">先停止并卸载服务：</p>
                   <code class="block bg-white/80 px-2 py-1 rounded border border-amber-200 font-mono text-[11px] mb-2 text-slate-800">sudo cloudflared service uninstall</code>
                   <p class="mb-1">若需彻底移除程序：</p>
                   <code class="block bg-white/80 px-2 py-1 rounded border border-amber-200 font-mono text-[11px] text-slate-800">brew uninstall cloudflared</code>
-                </div>
-              </li>
-              <li class="flex gap-4">
-                <span class="flex-shrink-0 w-6 h-6 rounded-full bg-white border border-amber-200 text-[11px] font-bold text-amber-700 flex items-center justify-center shadow-sm">7</span>
-                <div class="text-xs text-amber-900 leading-relaxed">
-                  <p class="font-bold mb-1.5 text-[13px]">启动接收服务</p>
-                  <p>完成以上准备后，回到本工具点击 <strong>启动服务</strong> 即可开始接收发布请求。</p>
                 </div>
               </li>
             </ol>
