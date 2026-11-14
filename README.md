@@ -2,6 +2,8 @@
 
 一个基于 Electron 的桌面工具。发送端可以管理多个项目，每次操作只处理所选项目。
 
+**[下载最新版 macOS 安装包（Apple 芯片）](https://github.com/Wing-Li/web_publish/releases/latest/download/QuickPackTool-darwin-arm64-signed.zip)**
+
 | 项目类型 | 项目卡操作 | 结果 |
 | --- | --- | --- |
 | 部署项目 | 本地打包 | 在发送端生成构建产物 ZIP，并打开保存目录 |
