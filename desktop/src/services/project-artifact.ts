@@ -16,6 +16,8 @@ export const formatDateTimeForFileName = (date: Date): string => {
   return `${mm}${dd}_${hh}${mi}${ss}`;
 };
 
+export const sourceVersionTime = (date: Date): string => date.getFullYear() + formatDateTimeForFileName(date);
+
 export const validateProjectBeforePack = async (
   project: SenderProject,
   log: (msg: string) => void,

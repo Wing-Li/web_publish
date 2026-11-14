@@ -6,11 +6,13 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReceiverConfig, SourceInitRequest, SourceReceipt, SourceTarget, SourceTaskStatus } from '../shared/types';
 import { extractSourceZip, validSourceName } from './source-extract';
+import { sourceVersionTime } from './project-artifact';
 
 const disk = fs.promises;
 const MiB = 1024 * 1024;
 const sha256 = /^[0-9a-f]{64}$/i;
 const taskIdPattern = /^[a-zA-Z0-9_-]{1,96}$/;
+const archiveVersionPattern = /^(\d{8}_\d{6})(?:-([1-9]\d{0,8}))?$/;
 
 class SourceError extends Error {
   constructor(readonly code: number, message: string) { super(message); }
@@ -37,14 +39,6 @@ async function directoryIdentity(folder: string): Promise<string | undefined> {
     if (stat.isDirectory()) return `${stat.dev}:${stat.ino}`;
   } catch (err) { if (!isMissing(err)) throw err; }
   return undefined;
-}
-
-function versionName(): string {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, '0');
-  const date = String(now.getFullYear()) + pad(now.getMonth() + 1) + pad(now.getDate());
-  const time = pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
-  return date + '-' + time + '-' + crypto.randomUUID();
 }
 
 function finalPath(task: StoredTask): string {
@@ -98,8 +92,41 @@ async function readInit(req: IncomingMessage): Promise<SourceInitRequest> {
     throw new SourceError(400, '源码任务的目标、项目名、校验值或分片参数无效');
   }
   // Normalize to a stable order; unrelated request fields must not become persisted paths.
-  const { targetId, projectName, fileSize, fileSha256, chunkSize, chunkCount } = body;
-  return { targetId, projectName, fileSize, fileSha256: fileSha256.toLowerCase(), chunkSize, chunkCount };
+  const { targetId, projectName, fileSize, fileSha256, chunkSize, chunkCount, archiveVersion } = body;
+  if (archiveVersion !== undefined && (typeof archiveVersion !== 'string' || !archiveVersionPattern.test(archiveVersion))) {
+    throw new SourceError(400, '源码包版本名称无效');
+  }
+  return { targetId, projectName, fileSize, fileSha256: fileSha256.toLowerCase(), chunkSize, chunkCount, archiveVersion };
+}
+
+async function publishVersion(folder: string, project: string, task: StoredTask, staging: string): Promise<void> {
+  const preferred = task.version;
+  const timestamp = archiveVersionPattern.exec(preferred);
+  const base = timestamp?.[1] ?? preferred;
+  let number = Number(timestamp?.[2] ?? 1);
+  for (;;) {
+    const version = number === 1 ? base : `${base}-${number}`;
+    number++;
+    const destination = path.join(project, version);
+    // Receivers sharing a target must not replace each other's directories, even empty ones.
+    const lockPath = path.join(project, `.source-${version}.lock`);
+    let lock;
+    try { lock = await disk.open(lockPath, 'wx', 0o600); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue; throw err; }
+    try {
+      try { await disk.lstat(destination); continue; }
+      catch (err) { if (!isMissing(err)) throw err; }
+      if (task.version !== version) {
+        task.version = version;
+        await saveTask(folder, task);
+      }
+      await disk.rename(staging, destination);
+      return;
+    } finally {
+      await lock.close();
+      await disk.unlink(lockPath);
+    }
+  }
 }
 
 async function writeChunk(req: IncomingMessage, folder: string, task: StoredTask, index: number): Promise<void> {
@@ -229,11 +256,7 @@ export class SourceReceiver {
       await extractSourceZip(archive, staging, expansionLimit);
       if (await disk.realpath(project) !== project ||
           (await this.currentTarget(task.target.id)).path !== target.path) throw new Error('接收目录已更改');
-      try {
-        await disk.lstat(finalPath(task));
-        throw new Error('版本目录已被占用');
-      } catch (err) { if (!isMissing(err)) throw err; }
-      await disk.rename(staging, finalPath(task));
+      await publishVersion(folder, project, task, staging);
       await this.finish(folder, task);
     } finally { await disk.rm(path.join(folder, 'source.zip'), { force: true }); }
   }
@@ -296,6 +319,8 @@ export class SourceReceiver {
           let existing: StoredTask | undefined;
           try { existing = await this.readRecovered(folder); }
           catch (err) { if (!(err instanceof SourceError && err.code === 404)) throw err; }
+          // Older receivers saved requests without the optional naming hint; retries keep the saved version.
+          if (existing) initialization.archiveVersion = existing.request.archiveVersion;
           if (existing && JSON.stringify(existing.request) !== JSON.stringify(initialization)) {
             throw new SourceError(409, '任务 ID 已用于另一份源码包或接收目标');
           }
@@ -306,7 +331,8 @@ export class SourceReceiver {
           }
           const target = await this.currentTarget(initialization.targetId);
           if (existing && existing.target.path !== target.path) throw new SourceError(409, '原任务的目标目录已更改');
-          const task: StoredTask = existing ?? { id, request: initialization, version: versionName(), target, status: 'uploading' };
+          const task: StoredTask = existing ?? { id, request: initialization,
+            version: initialization.archiveVersion ?? sourceVersionTime(new Date()), target, status: 'uploading' };
           task.status = 'uploading';
           delete task.error;
           await disk.mkdir(folder, { recursive: true, mode: 0o700 });

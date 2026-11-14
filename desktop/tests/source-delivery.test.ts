@@ -130,6 +130,7 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   await assert.rejects(sender.getTargets({ ...project, receiverToken: 'incorrect' }), /401/);
   const putIndexes: number[] = [];
   const taskIds = new Set<string>();
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 10, 14, 14, 25, 47) });
   let interrupt = true;
   globalThis.fetch = async (url, options) => {
     const response = await realFetch(url, options);
@@ -158,10 +159,12 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   await fs.writeFile(path.join(workspace, 'src', 'main.txt'), '第二次发送');
   const outputs = path.join(workspace, project.artifactOutputDir);
   const [originalZip] = await fs.readdir(outputs);
-  assert.match(originalZip, /^示例项目_source_\d{8}_\d{6}\.zip$/);
+  assert.equal(originalZip, '示例项目_source_20261114_142547.zip');
   await fs.unlink(path.join(outputs, originalZip));
   const changedOutput = path.join(root, 'after-retry');
+  t.mock.timers.setTime(new Date(2026, 10, 14, 15, 30, 55).getTime());
   const first = await sender.send({ ...project, gitBranch: 'other', artifactOutputDir: changedOutput }, true, log);
+  assert.equal(path.basename(first.finalPath), '20261114_142547');
   await assert.rejects(fs.stat(changedOutput), { code: 'ENOENT' });
   assert.deepEqual(await fs.readdir(outputs), []);
   assert.deepEqual(putIndexes, [0, 1]);
@@ -171,9 +174,11 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   assert.equal(await fs.readFile(originalFile, 'utf8'), '第一次发送');
   assert.deepEqual((await fs.readdir(first.finalPath)).sort(), ['.gitignore', 'assets.bin', 'src']);
   globalThis.fetch = realFetch;
+  // Another sender can submit the same time even though the original local ZIP was removed.
+  t.mock.timers.setTime(new Date(2026, 10, 14, 14, 25, 47).getTime());
   const second = await sender.send(project, false, log);
   assert.equal((await fs.readdir(outputs)).length, 1);
-  assert.notEqual(second.finalPath, first.finalPath);
+  assert.equal(path.basename(second.finalPath), '20261114_142547-2');
   assert.equal(await fs.readFile(path.join(second.finalPath, 'src', 'main.txt'), 'utf8'), '第二次发送');
   assert.equal(await fs.readFile(originalFile, 'utf8'), '第一次发送');
   const canonicalTarget = await fs.realpath(destination);

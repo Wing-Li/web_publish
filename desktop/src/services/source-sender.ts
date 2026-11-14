@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { artifactDirectory, formatDateTimeForFileName, validateProjectBeforePack } from './project-artifact';
+import { artifactDirectory, sourceVersionTime, validateProjectBeforePack } from './project-artifact';
 import { packSource } from './source-pack/pack';
 import type { SourceProject, SourceInitRequest, SourceTarget, SourceTaskStatus } from '../shared/types';
 
@@ -27,10 +27,10 @@ async function hashFile(archive: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function saveSourceZip(archive: string, outputDir: string, stem: string): Promise<string> {
+async function saveSourceZip(archive: string, outputDir: string, prefix: string, timestamp: string) {
   for (let number = 1; ; number++) {
-    const suffix = number === 1 ? '' : `-${number}`;
-    const result = path.join(outputDir, stem + suffix + '.zip');
+    const version = number === 1 ? timestamp : `${timestamp}-${number}`;
+    const result = path.join(outputDir, `${prefix}_source_${version}.zip`);
     const temporary = result + '.tmp';
     let reservation;
     try {
@@ -45,7 +45,7 @@ async function saveSourceZip(archive: string, outputDir: string, stem: string): 
       if (fs.lstatSync(result, { throwIfNoEntry: false })) continue;
       await fs.promises.copyFile(archive, temporary, fs.constants.COPYFILE_FICLONE);
       await fs.promises.rename(temporary, result);
-      return result;
+      return { path: result, version };
     } finally {
       await fs.promises.rm(temporary, { force: true });
     }
@@ -116,7 +116,7 @@ export class SourceSender {
     return raw;
   }
 
-  private async createArtifact(project: SourceProject, archive: string, log: (msg: string) => void): Promise<string> {
+  private async createArtifact(project: SourceProject, archive: string, log: (msg: string) => void) {
     await validateProjectBeforePack(project, log);
     if (!path.isAbsolute(project.projectPath) || !(await fs.promises.stat(project.projectPath)).isDirectory()) {
       throw new Error('请选择有效的本地项目目录。');
@@ -124,12 +124,11 @@ export class SourceSender {
     const outputDir = artifactDirectory(project);
     await fs.promises.mkdir(outputDir, { recursive: true });
     const prefix = Array.from(project.name.trim().replace(/[^\p{L}\p{N}._-]+/gu, '_')).slice(0, 45).join('') || 'source';
-    const started = new Date();
-    const stem = `${prefix}_source_${started.getFullYear()}${formatDateTimeForFileName(started)}`;
+    const timestamp = sourceVersionTime(new Date());
     log('开始打包当前工作目录…\n');
     const count = await packSource(project.projectPath, archive, this.stateDir, outputDir);
-    const result = await saveSourceZip(archive, outputDir, stem);
-    log(`已打包 ${count} 个源码文件。\n本地 ZIP：${result}\n`);
+    const result = await saveSourceZip(archive, outputDir, prefix, timestamp);
+    log(`已打包 ${count} 个源码文件。\n本地 ZIP：${result.path}\n`);
     return result;
   }
 
@@ -138,7 +137,7 @@ export class SourceSender {
     await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
     const id = randomUUID();
     const archive = path.join(dir, id + '.zip');
-    try { return await this.createArtifact(project, archive, log); }
+    try { return (await this.createArtifact(project, archive, log)).path; }
     finally { await fs.promises.rm(archive, { force: true }); }
   }
 
@@ -154,11 +153,11 @@ export class SourceSender {
       try { previous = await this.readPending(dir); } catch { /* A fresh send can replace an unreadable record. */ }
     }
     try {
-      await this.createArtifact(project, archive, log);
+      const artifact = await this.createArtifact(project, archive, log);
       const { size } = await fs.promises.stat(archive);
       const pending: PendingSource = {
         id, receiver,
-        init: { targetId: project.sourceTargetId, projectName: project.name, fileSize: size,
+        init: { targetId: project.sourceTargetId, projectName: project.name, archiveVersion: artifact.version, fileSize: size,
           fileSha256: await hashFile(archive), chunkSize: CHUNK_SIZE, chunkCount: Math.ceil(size / CHUNK_SIZE) },
       };
       await fs.promises.writeFile(tmp, JSON.stringify(pending), { mode: 0o600 });

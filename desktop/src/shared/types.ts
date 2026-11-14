@@ -35,6 +35,7 @@ export interface SourceTarget {
 export interface SourceInitRequest {
   targetId: string;
   projectName: string;
+  archiveVersion?: string;
   fileSize: number;
   fileSha256: string;
   chunkSize: number;
