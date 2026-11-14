@@ -27,6 +27,31 @@ async function hashFile(archive: string): Promise<string> {
   return hash.digest('hex');
 }
 
+async function saveSourceZip(archive: string, outputDir: string, stem: string): Promise<string> {
+  for (let number = 1; ; number++) {
+    const suffix = number === 1 ? '' : `-${number}`;
+    const result = path.join(outputDir, stem + suffix + '.zip');
+    const temporary = result + '.tmp';
+    let reservation;
+    try {
+      reservation = await fs.promises.open(temporary, 'wx', 0o600);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
+    try {
+      await reservation.close();
+      // Check after claiming the name so concurrent packs cannot replace an earlier ZIP.
+      if (fs.lstatSync(result, { throwIfNoEntry: false })) continue;
+      await fs.promises.copyFile(archive, temporary, fs.constants.COPYFILE_FICLONE);
+      await fs.promises.rename(temporary, result);
+      return result;
+    } finally {
+      await fs.promises.rm(temporary, { force: true });
+    }
+  }
+}
+
 async function request<T>(url: string, token: string, options: RequestInit = {}, missingRouteHint?: string): Promise<T> {
   if (!token.trim()) throw new Error('请填写接收端鉴权 Token。');
   const response = await fetch(url, {
@@ -91,7 +116,7 @@ export class SourceSender {
     return raw;
   }
 
-  private async createArtifact(project: SourceProject, archive: string, id: string, log: (msg: string) => void): Promise<string> {
+  private async createArtifact(project: SourceProject, archive: string, log: (msg: string) => void): Promise<string> {
     await validateProjectBeforePack(project, log);
     if (!path.isAbsolute(project.projectPath) || !(await fs.promises.stat(project.projectPath)).isDirectory()) {
       throw new Error('请选择有效的本地项目目录。');
@@ -99,17 +124,11 @@ export class SourceSender {
     const outputDir = artifactDirectory(project);
     await fs.promises.mkdir(outputDir, { recursive: true });
     const prefix = Array.from(project.name.trim().replace(/[^\p{L}\p{N}._-]+/gu, '_')).slice(0, 45).join('') || 'source';
-    const name = prefix + '_source_' + formatDateTimeForFileName(new Date()) + '_' + id + '.zip';
-    const result = path.join(outputDir, name);
-    const temporary = result + '.tmp';
+    const started = new Date();
+    const stem = `${prefix}_source_${started.getFullYear()}${formatDateTimeForFileName(started)}`;
     log('开始打包当前工作目录…\n');
     const count = await packSource(project.projectPath, archive, this.stateDir, outputDir);
-    try {
-      await fs.promises.copyFile(archive, temporary, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
-      await fs.promises.rename(temporary, result);
-    } finally {
-      await fs.promises.rm(temporary, { force: true });
-    }
+    const result = await saveSourceZip(archive, outputDir, stem);
     log(`已打包 ${count} 个源码文件。\n本地 ZIP：${result}\n`);
     return result;
   }
@@ -119,7 +138,7 @@ export class SourceSender {
     await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
     const id = randomUUID();
     const archive = path.join(dir, id + '.zip');
-    try { return await this.createArtifact(project, archive, id, log); }
+    try { return await this.createArtifact(project, archive, log); }
     finally { await fs.promises.rm(archive, { force: true }); }
   }
 
@@ -135,7 +154,7 @@ export class SourceSender {
       try { previous = await this.readPending(dir); } catch { /* A fresh send can replace an unreadable record. */ }
     }
     try {
-      await this.createArtifact(project, archive, id, log);
+      await this.createArtifact(project, archive, log);
       const { size } = await fs.promises.stat(archive);
       const pending: PendingSource = {
         id, receiver,

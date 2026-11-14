@@ -5,6 +5,9 @@ import { pipeline } from 'node:stream/promises';
 import { ZipFile } from 'yazl';
 import { rootIgnoreMatcher } from './gitignore';
 
+// Skip current and legacy source ZIPs even when the output directory has changed.
+const sourceZipName = /_source_(?:\d{8}_\d{6}(?:-\d+)?|\d{4}_\d{6}_[0-9a-f-]{36})\.zip(?:\.tmp)?$/i;
+
 const within = (root: string, candidate: string): boolean => {
   const relative = path.relative(root, candidate);
   return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
@@ -57,14 +60,14 @@ export async function packSource(source: string, output: string, stateDir: strin
   async function visit(dir: string): Promise<void> {
     for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
       if (entry.name === '.git') continue;
+      if (!entry.isDirectory() && sourceZipName.test(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (full === defaultDir || full === selectedDir) continue;
       const relative = path.relative(root, full).split(path.sep).join('/');
       if (entry.name !== '.gitignore' && ignored(relative)) continue;
       const resolved = await checkedRealpath(root, full);
       if (within(cache, resolved) || resolved === destination) continue;
-      // A previous output directory may no longer be selected, or the root itself may be the output.
-      if (/_source_\d{4}_\d{6}_[0-9a-f-]{36}\.zip(?:\.tmp)?$/i.test(path.basename(resolved))) continue;
+      if (entry.isSymbolicLink() && sourceZipName.test(path.basename(resolved))) continue;
       const stats = await fs.promises.stat(resolved);
       if (stats.isDirectory()) {
         if (!entry.isSymbolicLink() && !ignored(relative)) await visit(full);

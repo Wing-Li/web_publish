@@ -66,8 +66,11 @@ test('源码本地打包使用所选分支和 ZIP 输出目录，普通目录以
   };
   const sender = new SourceSender(path.join(root, 'cache'));
   const log = (): void => { /* 离线打包 */ };
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 10, 14, 9, 5, 7) });
+  const expectedStem = '本地示例_source_20261114_090507';
   const defaultZip = await sender.packLocal(project, log);
   assert.equal(path.dirname(defaultZip), path.join(workspace, '.web-publisher-artifacts'));
+  assert.equal(path.basename(defaultZip), expectedStem + '.zip');
   execFileSync('git', ['init', '-q', '-b', 'main', workspace]);
   await assert.rejects(sender.packLocal({ ...project, gitBranch: 'release' }, log), /当前分支为 main，与配置 release 不一致/);
   project.gitBranch = 'main';
@@ -75,8 +78,13 @@ test('源码本地打包使用所选分支和 ZIP 输出目录，普通目录以
   const selectedZip = await sender.packLocal(project, log);
   assert.equal(path.dirname(selectedZip), path.join(workspace, 'packages'));
   project.artifactOutputDir = workspace;
-  await sender.packLocal(project, log);
-  const rootZip = await sender.packLocal(project, log);
+  const existingZip = path.join(workspace, expectedStem + '.zip');
+  await fs.writeFile(existingZip, '同一秒生成的已有包');
+  await fs.writeFile(path.join(workspace, '本地示例_source_1114_090507_12345678-1234-4234-8234-123456789abc.zip'), '旧包');
+  const concurrent = await Promise.all([sender.packLocal(project, log), sender.packLocal(project, log)]);
+  assert.deepEqual(concurrent.map(file => path.basename(file)).sort(), [expectedStem + '-2.zip', expectedStem + '-3.zip']);
+  assert.equal(await fs.readFile(existingZip, 'utf8'), '同一秒生成的已有包');
+  const rootZip = concurrent[0];
   const extracted = path.join(root, 'extracted');
   await fs.mkdir(extracted);
   await extractSourceZip(rootZip, extracted, 1024);
@@ -150,7 +158,7 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   await fs.writeFile(path.join(workspace, 'src', 'main.txt'), '第二次发送');
   const outputs = path.join(workspace, project.artifactOutputDir);
   const [originalZip] = await fs.readdir(outputs);
-  assert.ok(originalZip.endsWith('.zip'));
+  assert.match(originalZip, /^示例项目_source_\d{8}_\d{6}\.zip$/);
   await fs.unlink(path.join(outputs, originalZip));
   const changedOutput = path.join(root, 'after-retry');
   const first = await sender.send({ ...project, gitBranch: 'other', artifactOutputDir: changedOutput }, true, log);
