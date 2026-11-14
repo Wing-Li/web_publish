@@ -1,4 +1,4 @@
-import { SenderProject, StepStatus } from '../../shared/types';
+import { DeployProject, StepStatus } from '../../shared/types';
 import { esc } from '../utils/dom';
 
 export interface BranchRuntime {
@@ -224,11 +224,11 @@ export const renderDeploySteps = (steps: DeployStep[]): string => {
   `;
 };
 
-const projectInputId = (pid: string, field: keyof SenderProject): string =>
+const projectInputId = (pid: string, field: keyof DeployProject): string =>
   `p__${pid}__${field}`;
 const projectBranchSelectId = (pid: string): string => `p__${pid}__branchSel`;
 
-const renderBranchSelect = (project: SenderProject, rt?: BranchRuntime): string => {
+const renderBranchSelect = (project: DeployProject, rt?: BranchRuntime): string => {
   const opts = rt?.branches ?? (project.gitBranch ? [project.gitBranch] : []);
   const disabled = project.projectPath.trim() ? '' : 'disabled';
   
@@ -246,7 +246,7 @@ const renderBranchSelect = (project: SenderProject, rt?: BranchRuntime): string 
 };
 
 export const createProjectCard = (
-  project: SenderProject, 
+  project: DeployProject,
   rt?: BranchRuntime, 
   busy = false, 
   steps?: DeployStep[],
@@ -262,7 +262,7 @@ export const createProjectCard = (
   
   el.innerHTML = `
     <!-- Header: Info + Actions -->
-    <div class="flex items-start justify-between gap-4 border-b border-slate-50 pb-4">
+    <div class="flex flex-wrap items-start justify-between gap-4 border-b border-slate-50 pb-4">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 mb-1">
           <div class="w-2 h-2 rounded-full ${busy ? 'bg-teal-500 animate-ping' : 'bg-slate-300'}"></div>
@@ -389,11 +389,11 @@ export const createProjectCard = (
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6 bg-blue-50/30 p-5 rounded-2xl border border-blue-100/50">
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-blue-400 uppercase tracking-wider pl-1">接收端服务地址</label>
-              <input id="${projectInputId(project.id, 'receiverBaseUrl')}" class="form-input-new font-mono text-blue-700" value="${esc(project.receiverBaseUrl)}" placeholder="http://ip:port" />
+              <input id="${projectInputId(project.id, 'receiverBaseUrl')}" data-source-connection="${esc(project.id)}" class="form-input-new font-mono text-blue-700" value="${esc(project.receiverBaseUrl)}" placeholder="http://ip:port" />
             </div>
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-blue-400 uppercase tracking-wider pl-1">接收端鉴权 Token</label>
-              <input id="${projectInputId(project.id, 'receiverToken')}" type="password" class="form-input-new font-mono text-blue-700" value="${esc(project.receiverToken)}" placeholder="输入访问令牌" />
+              <input id="${projectInputId(project.id, 'receiverToken')}" data-source-connection="${esc(project.id)}" type="password" class="form-input-new font-mono text-blue-700" value="${esc(project.receiverToken)}" placeholder="输入访问令牌" />
             </div>
             <div class="flex flex-col gap-1.5">
               <label class="text-[11px] font-black text-blue-400 uppercase tracking-wider pl-1">Cloudflare Pages 项目名</label>

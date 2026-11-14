@@ -2,12 +2,11 @@ import './index.css';
 import {
   AppConfig,
   AppMode,
-  BatchBuildAndDeployResult,
-  BatchBuildLocalResult,
   DeploymentTask,
   ReceiverRuntimeStatus,
-  SenderProject,
+  SenderProject, DeployProject, SourceProject,
 } from './shared/types';
+import { createProject, isDeployProject, isSourceProject } from './shared/projects';
 import type { DesktopApi } from './preload';
 
 // UI Imports
@@ -22,7 +21,8 @@ import {
 } from './ui/components/project-card';
 import { appLayoutTemplate } from './ui/layout/app-layout';
 import { senderViewTemplate } from './ui/views/sender-view';
-import { receiverViewTemplate } from './ui/views/receiver-view';
+import { receiverViewTemplate, ReceiverPage } from './ui/views/receiver-view';
+import { newSourcePanel, sourcePanelMarkup, sourceProjectForm, sourceReceiptRows, sourceSenderView, sourceTargetRows, SourcePanelState } from './ui/components/source-transfer';
 
 declare global {
   interface Window {
@@ -39,13 +39,16 @@ type StepStatus = 'pending' | 'running' | 'done' | 'failed';
 let config: AppConfig;
 const branchRuntimeMap = new Map<string, BranchRuntime>();
 const recentDeploymentMap = new Map<string, string>();       // projectId → deploymentId
-const localBuildArtifactMap = new Map<string, string>();     // projectId → zipPath
 const projectDeployStepsMap = new Map<string, DeployStep[]>(); // projectId → steps
 const projectBusyMap = new Map<string, boolean>();           // projectId → busy
+const sourcePanels = new Map<string, SourcePanelState>();
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let receiverPollTimer: ReturnType<typeof setInterval> | null = null;
-let currentActiveTab: 'sender' | 'receiver' = 'sender';
+type Workspace = 'sender' | 'source' | 'receiver';
+let currentActiveTab: Workspace = 'sender';
+let receiverPage: ReceiverPage = 'deploy';
+let sourceProjectId = '';
 
 // projectId → log text (max 50KB)
 const projectLogMap = new Map<string, string>();
@@ -55,23 +58,9 @@ const receiverLogScrollMap = new Map<string, number>();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const projectInputId = (pid: string, field: keyof SenderProject): string =>
+const projectInputId = (pid: string, field: keyof DeployProject | keyof SourceProject): string =>
   `p__${pid}__${field}`;
 const projectBranchSelectId = (pid: string): string => `p__${pid}__branchSel`;
-
-const newProjectTemplate = (): SenderProject => ({
-  id: `project_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`,
-  name: '新项目',
-  projectPath: '',
-  buildCommand: 'npm run build',
-  buildOutputDir: 'dist',
-  artifactOutputDir: '',
-  gitBranch: 'main',
-  receiverBaseUrl: 'http://127.0.0.1:17777',
-  receiverToken: 'change-me',
-  pagesProjectName: '',
-  deployBranch: 'main',
-});
 
 const makeSteps = (): DeployStep[] => [
   { id: 'build',  label: '构建',     status: 'pending' },
@@ -89,6 +78,7 @@ document.body.innerHTML = appLayoutTemplate;
 
 const viewContainer = $('viewContainer');
 const navSenderBtn = $<HTMLButtonElement>('navSenderBtn');
+const navSourceBtn = $<HTMLButtonElement>('navSourceBtn');
 const navReceiverBtn = $<HTMLButtonElement>('navReceiverBtn');
 
 // ─── Mode & Visibility Control ───────────────────────────────────────────────
@@ -105,23 +95,28 @@ const setModeRadio = (mode: AppMode): void => {
   });
 };
 
-const switchView = (target: 'sender' | 'receiver'): void => {
+const switchView = (target: Workspace): void => {
   currentActiveTab = target;
-  
-  // Update Nav UI
-  if (target === 'sender') {
-    navSenderBtn.classList.add('nav-btn-active');
-    navReceiverBtn.classList.remove('nav-btn-active');
-    navReceiverBtn.classList.add('text-slate-500', 'hover:bg-slate-50');
-    viewContainer.innerHTML = senderViewTemplate;
-    renderProjectCards();
+  const links = { sender: navSenderBtn, source: navSourceBtn, receiver: navReceiverBtn };
+  for (const [key, button] of Object.entries(links)) {
+    button.classList.toggle('nav-btn-active', key === target);
+    if (key === target) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+  if (target !== 'receiver') {
+    if (receiverPollTimer) { clearInterval(receiverPollTimer); receiverPollTimer = null; }
+    if (target === 'source') {
+      viewContainer.innerHTML = sourceSenderView(config.senderProjects.filter(isSourceProject), sourceProjectId);
+      showSourceProject();
+    } else {
+      viewContainer.innerHTML = senderViewTemplate;
+      renderProjectCards();
+    }
   } else {
-    navReceiverBtn.classList.add('nav-btn-active');
-    navSenderBtn.classList.remove('nav-btn-active');
-    navSenderBtn.classList.add('text-slate-500', 'hover:bg-slate-50');
-    viewContainer.innerHTML = receiverViewTemplate;
+    viewContainer.innerHTML = receiverViewTemplate(receiverPage);
     fillReceiverForm();
     void syncReceiverTasks();
+    startReceiverPolling();
     // Get latest receiver status
     void window.desktopApi.getReceiverStatus().then(updateReceiverStatusUI);
   }
@@ -133,12 +128,13 @@ const applyModeVisibility = (mode: AppMode): void => {
   // If mode changed to something that doesn't support current tab, switch tab
   if (mode === 'sender' && currentActiveTab === 'receiver') {
     switchView('sender');
-  } else if (mode === 'receiver' && currentActiveTab === 'sender') {
+  } else if (mode === 'receiver' && currentActiveTab !== 'receiver') {
     switchView('receiver');
   }
   
   // Update nav buttons visibility based on mode
   navSenderBtn.style.display = (mode === 'sender' || mode === 'both') ? 'flex' : 'none';
+  navSourceBtn.style.display = navSenderBtn.style.display;
   navReceiverBtn.style.display = (mode === 'receiver' || mode === 'both') ? 'flex' : 'none';
   
   updateOverview();
@@ -227,7 +223,7 @@ const renderReceiverTasks = (tasks: DeploymentTask[]): void => {
     wrap.innerHTML = `
       <div class="flex flex-col items-center justify-center py-20 text-slate-300">
         <svg class="w-12 h-12 mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-        <p class="text-sm italic">等待任务接入...</p>
+        <p class="text-sm italic">等待构建产物上传…</p>
       </div>
     `;
     return;
@@ -280,8 +276,9 @@ const renderReceiverTasks = (tasks: DeploymentTask[]): void => {
 const renderProjectCards = (): void => {
   const wrap = $('projectsWrap');
   if (!wrap) return;
-  wrap.innerHTML = '';
-  config.senderProjects.forEach(p => {
+  const projects = config.senderProjects.filter(isDeployProject);
+  wrap.innerHTML = projects.length ? '' : '<p class="rounded-3xl border border-dashed border-slate-300 p-8 text-sm text-slate-500">暂无部署项目</p>';
+  projects.forEach(p => {
     const card = createProjectCard(
       p, 
       branchRuntimeMap.get(p.id), 
@@ -297,19 +294,23 @@ const renderProjectCards = (): void => {
 // ─── Form Collection ─────────────────────────────────────────────────────────
 
 const collectProjects = (): SenderProject[] =>
-  config.senderProjects.map(p => ({
-    ...p,
-    name:             readInput(projectInputId(p.id, 'name'), p.name),
-    projectPath:      readInput(projectInputId(p.id, 'projectPath'), p.projectPath),
-    buildCommand:     readInput(projectInputId(p.id, 'buildCommand'), p.buildCommand),
-    buildOutputDir:   readInput(projectInputId(p.id, 'buildOutputDir'), p.buildOutputDir),
-    artifactOutputDir:readInput(projectInputId(p.id, 'artifactOutputDir'), p.artifactOutputDir, true),
-    gitBranch:        readSelect(projectBranchSelectId(p.id), p.gitBranch),
-    receiverBaseUrl:  readInput(projectInputId(p.id, 'receiverBaseUrl'), p.receiverBaseUrl),
-    receiverToken:    readInput(projectInputId(p.id, 'receiverToken'), p.receiverToken),
-    pagesProjectName: readInput(projectInputId(p.id, 'pagesProjectName'), p.pagesProjectName, true),
-    deployBranch:     readInput(projectInputId(p.id, 'deployBranch'), p.deployBranch),
-  }));
+  config.senderProjects.map(p => {
+    const connection = {
+      name: readInput(projectInputId(p.id, 'name'), p.name),
+      projectPath: readInput(projectInputId(p.id, 'projectPath'), p.projectPath),
+      receiverBaseUrl: readInput(projectInputId(p.id, 'receiverBaseUrl'), p.receiverBaseUrl, true),
+      receiverToken: readInput(projectInputId(p.id, 'receiverToken'), p.receiverToken, true),
+    };
+    if (p.kind === 'source') return { ...p, ...connection };
+    return { ...p, ...connection,
+      buildCommand: readInput(projectInputId(p.id, 'buildCommand'), p.buildCommand),
+      buildOutputDir: readInput(projectInputId(p.id, 'buildOutputDir'), p.buildOutputDir),
+      artifactOutputDir: readInput(projectInputId(p.id, 'artifactOutputDir'), p.artifactOutputDir, true),
+      gitBranch: readSelect(projectBranchSelectId(p.id), p.gitBranch),
+      pagesProjectName: readInput(projectInputId(p.id, 'pagesProjectName'), p.pagesProjectName, true),
+      deployBranch: readInput(projectInputId(p.id, 'deployBranch'), p.deployBranch),
+    };
+  });
 
 const getInputIfMounted = (id: string): string | undefined => {
   const el = document.getElementById(id) as HTMLInputElement | null;
@@ -368,6 +369,102 @@ const fillReceiverForm = (): void => {
   setVal('cfToken',        config.receiver.cloudflareApiToken);
   setVal('cfAccountId',    config.receiver.cloudflareAccountId);
   setVal('wranglerBin',    config.receiver.wranglerBin);
+  const targets = $('sourceTargetRows');
+  if (targets) targets.innerHTML = sourceTargetRows(config.receiver.sourceTargets);
+};
+
+const showSourceProject = (): void => {
+  const form = $('sourceProjectForm');
+  const project = config.senderProjects.find(p => p.id === sourceProjectId);
+  if (!form || project?.kind !== 'source') return;
+  form.innerHTML = sourceProjectForm(project);
+  let panel = sourcePanels.get(project.id);
+  if (!panel) {
+    panel = newSourcePanel();
+    sourcePanels.set(project.id, panel);
+  }
+  if (panel.sending || !project.projectPath) updateSourcePanel(project);
+  else void refreshSourcePanel(project, panel);
+};
+
+const updateSourcePanel = (project: SourceProject): void => {
+  const card = document.getElementById(`card-${project.id}`);
+  const wrap = card?.querySelector<HTMLElement>('[data-source-panel]');
+  if (!wrap) return;
+  const panel = sourcePanels.get(project.id);
+  if (!panel) return;
+  wrap.innerHTML = sourcePanelMarkup(project, panel, !!projectBusyMap.get(project.id));
+  const log = wrap.querySelector('pre');
+  if (log) log.scrollTop = log.scrollHeight;
+};
+
+const errorText = (err: unknown): string => err instanceof Error ? err.message : String(err);
+
+const refreshSourcePanel = async (project: SourceProject, panel: SourcePanelState): Promise<void> => {
+  const request = ++panel.request;
+  const currentPanelProject = (): SourceProject | undefined => {
+    if (sourcePanels.get(project.id) !== panel || panel.request !== request) return;
+    return config.senderProjects.filter(isSourceProject).find(p => p.id === project.id);
+  };
+  panel.loading = true;
+  panel.targets = [];
+  panel.notice = '';
+  panel.hasRootIgnore = undefined;
+  updateSourcePanel(project);
+  const info = window.desktopApi.getSourceInfo(project.id, project.projectPath).then(result => {
+    const current = currentPanelProject();
+    if (!current) return;
+    panel.hasRootIgnore = result.hasRootIgnore;
+    panel.pending = result.pending;
+    updateSourcePanel(current);
+  });
+  const targets = window.desktopApi.getSourceTargets(project).then(rows => {
+    const current = currentPanelProject();
+    if (!current) return;
+    panel.targets = rows;
+    if (current.sourceTargetId && !rows.some(t => t.id === current.sourceTargetId)) {
+      current.sourceTargetId = '';
+      panel.notice = '上次选择的目录已不可用，请重新选择。';
+    }
+    if (!rows.length) panel.notice = '请在接收端添加并保存一个源码接收目录。';
+  });
+  const results = await Promise.allSettled([info, targets]);
+  const current = currentPanelProject();
+  if (!current) return;
+  for (const result of results) {
+    if (result.status === 'rejected') panel.notice = errorText(result.reason);
+  }
+  panel.loading = false;
+  updateSourcePanel(current);
+};
+
+const runSourceSend = async (project: SourceProject, panel: SourcePanelState, retry: boolean): Promise<void> => {
+  if (panel.sending || projectBusyMap.get(project.id)) return;
+  if (!retry && !panel.targets.some(t => t.id === project.sourceTargetId)) return;
+  if (!retry && panel.pending && !window.confirm('重新发送将替换本机的待重试任务，并使用当前工作目录创建新版本。继续吗？')) return;
+  ++panel.request;
+  panel.loading = false;
+  panel.sending = true;
+  panel.error = '';
+  panel.finalPath = '';
+  panel.log = retry ? '正在继续原任务…\n' : '正在准备发送…\n';
+  setBusy(project.id, true);
+  updateSourcePanel(project);
+  try {
+    await window.desktopApi.updateConfig(config);
+    const { finalPath } = await window.desktopApi.sendSource(project.id, retry);
+    panel.finalPath = finalPath;
+    panel.pending = false;
+    showToast('源码已解压到远端版本目录', 'success');
+  } catch (err) {
+    panel.error = errorText(err);
+    const info = await window.desktopApi.getSourceInfo(project.id, project.projectPath).catch((): undefined => undefined);
+    panel.pending = info?.pending;
+    showToast('源码发送失败，请查看项目中的错误详情', 'error');
+  } finally {
+    panel.sending = false;
+    setBusy(project.id, false);
+  }
 };
 
 // ─── Progress Management ─────────────────────────────────────────────────────
@@ -448,10 +545,6 @@ const clearLog = (projectId: string): void => {
   card?.querySelector('.project-log-area')?.classList.add('hidden');
 };
 
-const appendAllLog = (msg: string): void => {
-  config.senderProjects.forEach(p => appendLog(p.id, msg));
-};
-
 // ─── Busy Management ─────────────────────────────────────────────────────────
 
 const setBusy = (projectId: string, busy: boolean): void => {
@@ -463,12 +556,16 @@ const setBusy = (projectId: string, busy: boolean): void => {
   });
   // 某些错误分支会在 busy=true 时触发整卡重绘，导致按钮保留 loading 样式。
   // busy 结束后统一重绘，确保 spinner 与 disabled 状态完全回收。
-  if (!busy) renderProjectCards();
+  if (!busy) {
+    config = collectConfig();
+    renderProjectCards();
+    const p = config.senderProjects.find(p => p.id === projectId);
+    if (p?.kind === 'source' && currentActiveTab === 'source') updateSourcePanel(p);
+  }
 };
 
 const setGlobalBusy = (busy: boolean): void => {
-  [$<HTMLButtonElement>('buildAllBtn'), $<HTMLButtonElement>('deployAllBtn'),
-   $<HTMLButtonElement>('saveBtn'), $<HTMLButtonElement>('addProjectBtn'),
+  [$<HTMLButtonElement>('saveBtn'), $<HTMLButtonElement>('addProjectBtn'),
    $<HTMLButtonElement>('exportConfigBtn'), $<HTMLButtonElement>('importConfigBtn')]
     .filter(Boolean)
     .forEach(btn => { btn.disabled = busy; });
@@ -482,7 +579,7 @@ const loadBranchesForProject = async (projectId: string, projectPath: string): P
     return;
   }
   const project = config.senderProjects.find(p => p.id === projectId);
-  if (!project) return;
+  if (project?.kind !== 'deploy') return;
 
   const result = await window.desktopApi.listGitBranches(projectPath.trim());
   const branches = [...result.branches];
@@ -494,7 +591,7 @@ const loadBranchesForProject = async (projectId: string, projectPath: string): P
 };
 
 const preloadAllBranches = async (): Promise<void> => {
-  for (const p of config.senderProjects) {
+  for (const p of config.senderProjects.filter(isDeployProject)) {
     try {
       await loadBranchesForProject(p.id, p.projectPath);
     } catch (err) {
@@ -596,10 +693,19 @@ const startPolling = (): void => {
 
 const syncReceiverTasks = async (): Promise<void> => {
   if (currentActiveTab !== 'receiver') return;
+  const source = receiverPage === 'source';
+  const wrap = $(source ? 'sourceReceiptRows' : 'receiverTasksWrap');
   try {
-    const tasks = await window.desktopApi.getAllDeployments();
-    renderReceiverTasks(tasks);
-  } catch { /* ignore */ }
+    if (source) {
+      const receipts = await window.desktopApi.getSourceReceipts();
+      if (wrap.isConnected) wrap.innerHTML = sourceReceiptRows(receipts);
+    } else {
+      const tasks = await window.desktopApi.getAllDeployments();
+      if (wrap.isConnected) renderReceiverTasks(tasks);
+    }
+  } catch (error) {
+    if (wrap.isConnected) wrap.textContent = errorText(error);
+  }
 };
 
 const startReceiverPolling = (): void => {
@@ -611,15 +717,35 @@ const startReceiverPolling = (): void => {
 
 const bindEvents = (): void => {
   // Nav tabs
-  navSenderBtn.onclick = () => switchView('sender');
-  navReceiverBtn.onclick = () => switchView('receiver');
+  navSenderBtn.onclick = () => { config = collectConfig(); switchView('sender'); };
+  navSourceBtn.onclick = () => { config = collectConfig(); switchView('source'); };
+  navReceiverBtn.onclick = () => { config = collectConfig(); switchView('receiver'); };
 
   // Mode Radios
   document.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach(r => {
     r.onchange = () => {
+      config = collectConfig();
       applyModeVisibility(getModeRadio());
     };
   });
+
+  const createDialog = $<HTMLDialogElement>('createProjectDialog');
+  $('cancelCreateProject').onclick = () => createDialog.close();
+  createDialog.querySelector('form').onsubmit = e => {
+    e.preventDefault();
+    const kind = createDialog.querySelector<HTMLInputElement>('input[name="projectKind"]:checked').value;
+    const nameInput = $<HTMLInputElement>('newProjectName');
+    const name = nameInput.value.trim();
+    if (!name) { nameInput.focus(); return; }
+    const project = createProject(kind === 'source' ? 'source' : 'deploy', crypto.randomUUID());
+    project.name = name;
+    config = collectConfig();
+    config.senderProjects.push(project);
+    if (project.kind === 'source') sourceProjectId = project.id;
+    createDialog.close();
+    switchView(project.kind === 'source' ? 'source' : 'sender');
+    showToast('项目已创建，配置完成后可保存', 'success');
+  };
 
   // Global Actions
   $('saveBtn').onclick = async () => {
@@ -628,6 +754,7 @@ const bindEvents = (): void => {
       config = await window.desktopApi.updateConfig(collectConfig());
       await preloadAllBranches();
       if (currentActiveTab === 'sender') renderProjectCards();
+      if (currentActiveTab === 'source') switchView('source');
       showToast('所有配置已成功保存', 'success');
     } catch (err) { handleError(err); }
     finally { setGlobalBusy(false); }
@@ -653,6 +780,8 @@ const bindEvents = (): void => {
       if (result.canceled || !result.config) return;
 
       config = result.config;
+      sourcePanels.clear();
+      sourceProjectId = '';
       setModeRadio(config.mode);
       currentActiveTab = config.mode === 'receiver' ? 'receiver' : 'sender';
       switchView(currentActiveTab);
@@ -665,9 +794,72 @@ const bindEvents = (): void => {
   };
 
   // View Container Delegation
+  viewContainer.oninput = (e) => {
+    const input = e.target as HTMLInputElement;
+    if (input.dataset.sourceTargetName) {
+      const target = config.receiver.sourceTargets.find(t => t.id === input.dataset.sourceTargetName);
+      if (target) target.name = input.value;
+    }
+    const project = config.senderProjects.find(p => p.id === input.dataset.sourceConnection);
+    if (project?.kind !== 'source') return;
+    project.sourceTargetId = '';
+    const panel = sourcePanels.get(project.id);
+    if (panel) {
+      ++panel.request;
+      panel.loading = false;
+      panel.targets = [];
+      panel.notice = '接收端连接已更改，请刷新目录。';
+      updateSourcePanel(project);
+    }
+  };
+  viewContainer.onchange = e => {
+    const select = e.target as HTMLSelectElement;
+    if (!select.dataset.sourceSelect) return;
+    const project = config.senderProjects.find(p => p.id === select.dataset.sourceSelect);
+    if (project?.kind !== 'source') return;
+    project.sourceTargetId = select.value;
+    updateSourcePanel(project);
+  };
   viewContainer.onclick = async (e) => {
     const target = e.target as HTMLElement;
     const btn = target.closest<HTMLButtonElement>('button[data-action]');
+    const receiverButton = target.closest<HTMLButtonElement>('button');
+    const page = receiverButton?.dataset.receiverPage;
+    if (page === 'source' || page === 'deploy') {
+      config = collectConfig();
+      receiverPage = page;
+      switchView('receiver');
+      return;
+    }
+    if (receiverButton?.id === 'addSourceTarget' || receiverButton?.dataset.targetChange) {
+      const existing = config.receiver.sourceTargets.find(t => t.id === receiverButton.dataset.targetChange);
+      try {
+        const path = await window.desktopApi.pickDirectory(existing?.path);
+        if (!path || path === existing?.path) return;
+        if (config.receiver.sourceTargets.some(t => t.path === path)) {
+          showToast('该目录已添加', 'info');
+          return;
+        }
+        const id = crypto.randomUUID();
+        if (existing) { existing.path = path; existing.id = id; }
+        else config.receiver.sourceTargets.push({ id, path, name: path.split(/[/\\]/).filter(Boolean).pop() || path });
+        const rows = $('sourceTargetRows');
+        if (rows) rows.innerHTML = sourceTargetRows(config.receiver.sourceTargets);
+        showToast('目录已更新，保存全部配置后生效', 'info');
+      } catch (err) { handleError(err); }
+      return;
+    }
+    if (receiverButton?.dataset.targetRemove) {
+      config.receiver.sourceTargets = config.receiver.sourceTargets.filter(t => t.id !== receiverButton.dataset.targetRemove);
+      $('sourceTargetRows').innerHTML = sourceTargetRows(config.receiver.sourceTargets);
+      showToast('已从配置移除目录，保存后生效', 'info');
+      return;
+    }
+    if (receiverButton?.dataset.openReceipt) {
+      try { await window.desktopApi.openSourceReceipt(receiverButton.dataset.openReceipt); }
+      catch (err) { handleError(err); }
+      return;
+    }
     
     // Receiver Service Controls
     if (target.id === 'startReceiverBtn') {
@@ -691,54 +883,14 @@ const bindEvents = (): void => {
     }
 
     // Sender Global Actions
-    if (target.id === 'addProjectBtn') {
-      config = collectConfig();
-      config.senderProjects.push(newProjectTemplate());
-      renderProjectCards();
-      showToast('已添加新项目，请配置后保存', 'info');
+    if (receiverButton?.id === 'addProjectBtn') {
+      const kind = currentActiveTab === 'source' ? 'source' : 'deploy';
+      createDialog.querySelector<HTMLInputElement>(`input[value="${kind}"]`).checked = true;
+      setVal('newProjectName', '');
+      createDialog.showModal();
+      $('newProjectName').focus();
       return;
     }
-    if (target.id === 'buildAllBtn') {
-      try {
-        setGlobalBusy(true);
-        config = await window.desktopApi.updateConfig(collectConfig());
-        showToast('开始批量构建项目...', 'info');
-        const result: BatchBuildLocalResult = await window.desktopApi.buildLocalAll();
-        result.succeeded.forEach(r => localBuildArtifactMap.set(r.projectId, r.artifactPath));
-        if (result.failed.length > 0) {
-          result.failed.forEach(f => showToast(`${f.projectName} 构建失败`, 'error'));
-        }
-        if (result.succeeded.length > 0) {
-          showToast(`${result.succeeded.length} 个项目构建成功`, 'success');
-          const opened = new Set<string>();
-          result.succeeded.forEach(r => {
-            const dir = r.artifactPath.replace(/\/[^/]+$/, '');
-            if (!opened.has(dir)) { opened.add(dir); window.desktopApi.openFolder(dir); }
-          });
-        }
-      } catch (err) { handleError(err); }
-      finally { setGlobalBusy(false); }
-      return;
-    }
-    if (target.id === 'deployAllBtn') {
-      try {
-        setGlobalBusy(true);
-        config = await window.desktopApi.updateConfig(collectConfig());
-        showToast('正在批量发布项目...', 'info');
-        const result: BatchBuildAndDeployResult = await window.desktopApi.buildAndDeployAll();
-        result.submitted.forEach(r => recentDeploymentMap.set(r.projectId, r.deploymentId));
-        if (result.failed.length > 0) {
-          result.failed.forEach(f => showToast(`${f.projectName} 发布失败`, 'error'));
-        }
-        if (result.submitted.length > 0) {
-          showToast(`${result.submitted.length} 个项目已提交发布`, 'info');
-          startPolling();
-        }
-      } catch (err) { handleError(err); }
-      finally { setGlobalBusy(false); }
-      return;
-    }
-
     // Project Card Actions
     if (!btn) return;
     const { action, id: projectId } = btn.dataset;
@@ -746,11 +898,32 @@ const bindEvents = (): void => {
     // 任何会触发局部重绘的项目卡操作，先把当前输入草稿同步到内存，避免未保存输入被覆盖
     config = collectConfig();
 
+    if (action.startsWith('source-')) {
+      const project = config.senderProjects.find(p => p.id === projectId);
+      if (project?.kind !== 'source') return;
+      if (action === 'source-open') {
+        sourceProjectId = sourceProjectId === projectId ? '' : projectId;
+        switchView('source');
+        return;
+      }
+      const panel = sourcePanels.get(projectId);
+      if (panel && action === 'source-refresh') {
+        await refreshSourcePanel(project, panel);
+      } else if (panel && (action === 'source-send' || action === 'source-retry')) {
+        await runSourceSend(project, panel, action === 'source-retry');
+      } else if (panel?.finalPath && action === 'source-copy') {
+        try { await navigator.clipboard.writeText(panel.finalPath); showToast('远端路径已复制', 'success'); }
+        catch (err) { handleError(err); }
+      }
+      return;
+    }
     if (action === 'clear-log') { clearLog(projectId); return; }
     if (action === 'remove') {
+      sourcePanels.delete(projectId);
+      if (sourceProjectId === projectId) sourceProjectId = '';
       config.senderProjects = config.senderProjects.filter(p => p.id !== projectId);
-      if (config.senderProjects.length === 0) config.senderProjects.push(newProjectTemplate());
-      renderProjectCards();
+      if (currentActiveTab === 'source') switchView('source');
+      else renderProjectCards();
       showToast('项目已从列表移除', 'info');
       return;
     }
@@ -760,15 +933,20 @@ const bindEvents = (): void => {
       const path = await window.desktopApi.pickDirectory(p.projectPath);
       if (path) {
         p.projectPath = path;
-        await loadBranchesForProject(projectId, path);
-        renderProjectCards();
+        if (p.kind === 'source') {
+          switchView('source');
+        } else {
+          try { await loadBranchesForProject(projectId, path); }
+          catch (err) { branchRuntimeMap.set(projectId, { branches: [], current: '', error: errorText(err) }); }
+          renderProjectCards();
+        }
         showToast('路径已更新', 'success');
       }
       return;
     }
     if (action === 'pick-artifact-path') {
       const p = config.senderProjects.find(x => x.id === projectId);
-      if (!p) return;
+      if (p?.kind !== 'deploy') return;
       const path = await window.desktopApi.pickDirectory(p.artifactOutputDir);
       if (path) {
         p.artifactOutputDir = path;
@@ -818,7 +996,6 @@ const bindEvents = (): void => {
         const res = await window.desktopApi.buildLocalOne(projectId);
         setStep(projectId, 'build', 'done');
         setStep(projectId, 'zip',   'done');
-        localBuildArtifactMap.set(res.projectId, res.artifactPath);
         showToast('本地打包成功 ✓', 'success');
         setTimeout(() => clearProjectSteps(projectId), 2000);
         window.desktopApi.openFolder(res.artifactPath.replace(/\/[^/]+$/, ''));
@@ -875,9 +1052,18 @@ const bindEvents = (): void => {
 const init = async (): Promise<void> => {
   // Logs
   window.desktopApi.offSenderLog();
-  window.desktopApi.onSenderLog(({ projectId, msg }) => {
-    if (projectId === '__all__') appendAllLog(msg);
-    else appendLog(projectId, msg);
+  window.desktopApi.onSenderLog(({ projectId, msg }) => appendLog(projectId, msg));
+  window.desktopApi.offSourceLog();
+  window.desktopApi.onSourceLog(({ projectId, msg }) => {
+    const panel = sourcePanels.get(projectId);
+    if (!panel) return;
+    panel.log = (panel.log + msg.trimEnd() + '\n').slice(-LOG_MAX_BYTES);
+    const output = document.getElementById(`card-${projectId}`)?.querySelector<HTMLElement>('[data-source-log]');
+    if (output) {
+      output.textContent = panel.log;
+      output.classList.remove('hidden');
+      output.scrollTop = output.scrollHeight;
+    }
   });
 
   // Config

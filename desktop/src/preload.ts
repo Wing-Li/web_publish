@@ -1,12 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   AppConfig,
-  BatchBuildAndDeployResult,
-  BatchBuildLocalResult,
   BuildAndDeployResult,
   BuildLocalResult,
   DeploymentTask,
   ReceiverRuntimeStatus,
+  SourceProject,
+  SourceReceipt,
+  SourceTarget,
 } from './shared/types';
 
 const api = {
@@ -48,6 +49,19 @@ const api = {
   getAllDeployments: (): Promise<DeploymentTask[]> =>
     ipcRenderer.invoke('receiver:get-all-deployments'),
 
+  getSourceTargets: (project: SourceProject): Promise<SourceTarget[]> =>
+    ipcRenderer.invoke('source:get-targets', project),
+  getSourceInfo: (projectId: string, projectPath: string): Promise<{ pending: boolean; hasRootIgnore: boolean }> =>
+    ipcRenderer.invoke('source:get-info', projectId, projectPath),
+  sendSource: (projectId: string, retry: boolean): Promise<{ finalPath: string }> =>
+    ipcRenderer.invoke('source:send', projectId, retry),
+  getSourceReceipts: (): Promise<SourceReceipt[]> => ipcRenderer.invoke('source:get-receipts'),
+  openSourceReceipt: (id: string): Promise<void> => ipcRenderer.invoke('source:open-receipt', id),
+  onSourceLog: (callback: (data: { projectId: string; msg: string }) => void): void => {
+    ipcRenderer.on('source:log', (_, data: { projectId: string; msg: string }) => callback(data));
+  },
+  offSourceLog: (): void => { ipcRenderer.removeAllListeners('source:log'); },
+
   onSenderLog: (callback: (data: { projectId: string; msg: string }) => void): void => {
     ipcRenderer.on('sender:log', (_, data: { projectId: string; msg: string }) => callback(data));
   },
@@ -62,12 +76,8 @@ const api = {
 
   buildAndDeployOne: (projectId: string): Promise<BuildAndDeployResult> =>
     ipcRenderer.invoke('sender:build-deploy-one', projectId),
-  buildAndDeployAll: (): Promise<BatchBuildAndDeployResult> =>
-    ipcRenderer.invoke('sender:build-deploy-all'),
   buildLocalOne: (projectId: string): Promise<BuildLocalResult> =>
     ipcRenderer.invoke('sender:build-local-one', projectId),
-  buildLocalAll: (): Promise<BatchBuildLocalResult> =>
-    ipcRenderer.invoke('sender:build-local-all'),
 };
 
 contextBridge.exposeInMainWorld('desktopApi', api);

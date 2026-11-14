@@ -1,4 +1,5 @@
-export const receiverViewTemplate = `
+export type ReceiverPage = 'deploy' | 'source';
+export const receiverViewTemplate = (page: ReceiverPage): string => `
   <section id="receiverSection" class="flex flex-col gap-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
     <!-- Header -->
     <div class="flex items-center justify-between">
@@ -7,7 +8,7 @@ export const receiverViewTemplate = `
           接收端服务
           <span class="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-bold tracking-widest border border-blue-100">接收端模式</span>
         </h2>
-        <p class="text-sm text-slate-400 mt-1">监听并自动部署发送端上传的压缩包产物。</p>
+        <p class="text-sm text-slate-400 mt-1">部署构建产物，或将收到的源码解压到新的版本目录。</p>
       </div>
       
       <!-- Status Controls -->
@@ -17,6 +18,11 @@ export const receiverViewTemplate = `
         <button id="startReceiverBtn" class="btn-primary h-10 px-6 rounded-xl text-xs font-bold shadow-lg shadow-teal-500/20">启动服务</button>
         <button id="stopReceiverBtn" class="btn-secondary h-10 px-6 rounded-xl text-xs font-bold hidden">停止服务</button>
       </div>
+    </div>
+
+    <div role="group" aria-label="接收任务类型" class="flex gap-2 border-b border-slate-200 pb-3">
+      <button data-receiver-page="deploy" aria-pressed="${page === 'deploy'}" class="${page === 'deploy' ? 'btn-primary' : 'btn-secondary'} btn-sm h-9">产物部署</button>
+      <button data-receiver-page="source" aria-pressed="${page === 'source'}" class="${page === 'source' ? 'btn-primary' : 'btn-secondary'} btn-sm h-9">源码接收</button>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
@@ -45,6 +51,11 @@ export const receiverViewTemplate = `
           </div>
         </div>
 
+        ${page === 'source' ? `<section class="p-5 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-4">
+          <h3 class="text-sm font-bold text-slate-800">源码接收目录</h3>
+          <div id="sourceTargetRows" class="space-y-3"></div>
+          <button id="addSourceTarget" type="button" class="btn-secondary btn-sm">添加目录</button>
+        </section>` : `
         <!-- Cloudflare Config -->
         <div class="p-6 rounded-3xl bg-blue-50/50 border border-blue-100 shadow-sm space-y-6">
           <div class="flex items-center gap-3 text-xs font-bold text-blue-500 uppercase tracking-widest">
@@ -62,7 +73,7 @@ export const receiverViewTemplate = `
               <input id="cfAccountId" class="form-input-new border-blue-200 focus:border-blue-500 bg-white" />
             </div>
           </div>
-        </div>
+        </div>`}
 
         <!-- Advanced -->
         <details class="group/adv">
@@ -75,10 +86,10 @@ export const receiverViewTemplate = `
               <label class="form-label-new">最大上传限制 (MB)</label>
               <input id="maxUploadMb" type="number" class="form-input-new font-mono" />
             </div>
-            <div class="space-y-1.5">
+            ${page === 'deploy' ? `<div class="space-y-1.5">
               <label class="form-label-new">Wrangler 命令路径</label>
               <input id="wranglerBin" class="form-input-new font-mono" />
-            </div>
+            </div>` : ''}
             <div class="space-y-1.5">
               <label class="form-label-new">工作目录名称 (默认位于用户主目录下)</label>
               <input id="workRootName" class="form-input-new font-mono" />
@@ -89,8 +100,29 @@ export const receiverViewTemplate = `
 
       <!-- Right: Tasks + Guide -->
       <div class="lg:col-span-2 flex flex-col gap-6">
+        ${page === 'source' ? `<section class="p-5 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-4">
+          <h3 class="text-sm font-bold text-slate-800">源码接收记录</h3>
+          <div id="sourceReceiptRows" class="space-y-2 max-h-96 overflow-y-auto"></div>
+        </section>` : `
+        <!-- Task Records -->
+        <div id="receiverTasksSection" class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm flex flex-col gap-5 min-h-[400px]">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3 text-xs font-bold text-slate-400 uppercase tracking-widest">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+              构建产物部署记录
+            </div>
+            <span class="px-2.5 py-1 rounded-lg bg-slate-50 text-slate-400 text-[10px] font-bold tracking-wider border border-slate-100">实时状态</span>
+          </div>
+
+          <div id="receiverTasksWrap" class="flex flex-col gap-4">
+            <div class="flex flex-col items-center justify-center py-20 text-slate-300">
+              <svg class="w-12 h-12 mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+              <p class="text-sm italic">等待构建产物上传…</p>
+            </div>
+          </div>
+        </div>
         <!-- Deploy Guide -->
-        <details class="group/guide" open>
+        <details class="group/guide">
           <summary class="flex items-center justify-between p-5 rounded-3xl bg-amber-50 border border-amber-200 cursor-pointer list-none hover:bg-amber-100/50 transition-colors relative z-10">
             <div class="flex items-center gap-3">
               <div class="w-8 h-8 rounded-full bg-amber-200 flex items-center justify-center text-amber-700">
@@ -170,25 +202,7 @@ export const receiverViewTemplate = `
               </li>
             </ol>
           </div>
-        </details>
-
-        <!-- Task Records -->
-        <div id="receiverTasksSection" class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm flex flex-col gap-5 min-h-[400px]">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-3 text-xs font-bold text-slate-400 uppercase tracking-widest">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-              部署任务流水线
-            </div>
-            <span class="px-2.5 py-1 rounded-lg bg-slate-50 text-slate-400 text-[10px] font-bold tracking-wider border border-slate-100">实时状态</span>
-          </div>
-
-          <div id="receiverTasksWrap" class="flex flex-col gap-4">
-            <div class="flex flex-col items-center justify-center py-20 text-slate-300">
-              <svg class="w-12 h-12 mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-              <p class="text-sm italic">等待任务接入...</p>
-            </div>
-          </div>
-        </div>
+        </details>`}
       </div>
     </div>
   </section>

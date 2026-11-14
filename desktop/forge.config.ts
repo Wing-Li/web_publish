@@ -10,6 +10,7 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    extraResource: ['./src/services/source-pack/LICENSE'],
     name: 'QuickPackTool',
     executableName: 'QuickPackTool',
     appBundleId: 'com.wingli.webpublish.desktop',

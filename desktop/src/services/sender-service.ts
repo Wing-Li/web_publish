@@ -2,11 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  BatchBuildAndDeployResult,
-  BatchBuildLocalResult,
   BuildAndDeployResult,
   BuildLocalResult,
-  SenderProject,
+  DeployProject,
   UploadCompleteResponse,
   UploadInitRequest,
   UploadInitResponse,
@@ -145,7 +143,7 @@ const formatDateTimeForFileName = (date: Date): string => {
 };
 
 const validateProjectBeforeBuild = async (
-  project: SenderProject,
+  project: DeployProject,
   log: LogFn,
 ): Promise<void> => {
   ensure(Boolean(project.projectPath), '项目路径不能为空');
@@ -182,7 +180,7 @@ const validateProjectBeforeBuild = async (
 };
 
 const buildProjectArtifact = async (
-  project: SenderProject,
+  project: DeployProject,
   log: LogFn,
 ): Promise<{ zipPath: string }> => {
   await validateProjectBeforeBuild(project, log);
@@ -272,7 +270,7 @@ const buildProjectArtifact = async (
 };
 
 export const runBuildProjectOnly = async (
-  project: SenderProject,
+  project: DeployProject,
   log: LogFn = noop,
 ): Promise<BuildLocalResult> => {
   const { zipPath } = await buildProjectArtifact(project, log);
@@ -280,7 +278,7 @@ export const runBuildProjectOnly = async (
 };
 
 export const runBuildAndDeployProject = async (
-  project: SenderProject,
+  project: DeployProject,
   log: LogFn = noop,
 ): Promise<BuildAndDeployResult> => {
   ensure(Boolean(project.pagesProjectName), 'Cloudflare Pages 项目名不能为空');
@@ -385,48 +383,4 @@ export const runBuildAndDeployProject = async (
 
   log(`✓ 分片上传完成，deploymentId: ${result.deploymentId}`);
   return { projectId: project.id, deploymentId: result.deploymentId };
-};
-
-export const runBuildAllProjectsOnly = async (
-  projects: SenderProject[],
-  log: LogFn = noop,
-): Promise<BatchBuildLocalResult> => {
-  const succeeded: BuildLocalResult[] = [];
-  const failed: BatchBuildLocalResult['failed'] = [];
-
-  for (const project of projects) {
-    log(`\n━━ ${project.name} ━━`);
-    try {
-      succeeded.push(await runBuildProjectOnly(project, log));
-    } catch (error) {
-      failed.push({
-        projectId: project.id,
-        projectName: project.name,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return { succeeded, failed };
-};
-
-export const runBuildAndDeployAllProjects = async (
-  projects: SenderProject[],
-  log: LogFn = noop,
-): Promise<BatchBuildAndDeployResult> => {
-  const submitted: BuildAndDeployResult[] = [];
-  const failed: BatchBuildAndDeployResult['failed'] = [];
-
-  for (const project of projects) {
-    log(`\n━━ ${project.name} ━━`);
-    try {
-      submitted.push(await runBuildAndDeployProject(project, log));
-    } catch (error) {
-      failed.push({
-        projectId: project.id,
-        projectName: project.name,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return { submitted, failed };
 };

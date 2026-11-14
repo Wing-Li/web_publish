@@ -4,14 +4,13 @@ import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { ConfigStore } from './services/config-store';
 import { ReceiverServer } from './services/receiver-server';
+import { SourceSender } from './services/source-sender';
 import {
-  runBuildAllProjectsOnly,
-  runBuildAndDeployAllProjects,
   runBuildAndDeployProject,
   runBuildProjectOnly,
 } from './services/sender-service';
 import { runCommand, runCommandStrict } from './shared/run-command';
-import { AppConfig } from './shared/types';
+import { AppConfig, SourceProject } from './shared/types';
 
 if (started) {
   app.quit();
@@ -19,7 +18,8 @@ if (started) {
 
 app.setName('便捷打包工具');
 
-const configStore = new ConfigStore();
+const sourceSender = new SourceSender(path.join(app.getPath('userData'), 'source-sends'));
+const configStore = new ConfigStore(id => sourceSender.getPending(id));
 let config: AppConfig;
 let receiverServer: ReceiverServer;
 
@@ -45,8 +45,9 @@ const registerIpcHandlers = (): void => {
   ipcMain.handle('app:get-config', () => config);
 
   ipcMain.handle('app:update-config', (_, nextConfig: AppConfig) => {
-    config = nextConfig;
-    configStore.save(config);
+    const normalized = configStore.normalize(nextConfig);
+    configStore.save(normalized);
+    config = normalized;
     return config;
   });
 
@@ -92,7 +93,7 @@ const registerIpcHandlers = (): void => {
 
   ipcMain.handle('app:pick-directory', async (_, initialPath?: string) => {
     const result = await dialog.showOpenDialog({
-      title: '选择项目目录',
+      title: '选择目录',
       properties: ['openDirectory'],
       defaultPath: initialPath || undefined,
     });
@@ -162,7 +163,7 @@ const registerIpcHandlers = (): void => {
     'sender:switch-branch-and-pull',
     async (_, projectId: string): Promise<{ currentBranch: string }> => {
       const project = config.senderProjects.find((item) => item.id === projectId);
-      if (!project) throw new Error(`未找到项目: ${projectId}`);
+      if (project?.kind !== 'deploy') throw new Error(`未找到部署项目: ${projectId}`);
       if (!project.projectPath) throw new Error('项目路径为空，无法切换分支。');
       if (!project.gitBranch) throw new Error('未配置目标分支，无法切换分支。');
 
@@ -263,36 +264,45 @@ const registerIpcHandlers = (): void => {
     return receiverServer.getAllTasks();
   });
 
+  ipcMain.handle('source:get-targets', (_, project: SourceProject) => sourceSender.getTargets(project));
+  ipcMain.handle('source:get-info', async (_, projectId: string, projectPath: string) => ({
+    pending: await sourceSender.getPending(projectId),
+    hasRootIgnore: Boolean(projectPath && fs.existsSync(path.join(projectPath, '.gitignore'))),
+  }));
+  ipcMain.handle('source:send', (event, projectId: string, retry: boolean) => {
+    const project = config.senderProjects.find((p) => p.id === projectId);
+    if (project?.kind !== 'source') throw new Error('仅源码项目可发送源码');
+    return sourceSender.send(project, retry, (msg) => {
+      if (!event.sender.isDestroyed()) event.sender.send('source:log', { projectId, msg });
+    });
+  });
+  ipcMain.handle('source:get-receipts', () => receiverServer.getSourceReceipts());
+  ipcMain.handle('source:open-receipt', async (_, id: string) => {
+    const receipts = await receiverServer.getSourceReceipts();
+    const receipt = receipts.find((item) => item.id === id);
+    if (!receipt || !(await fs.promises.stat(receipt.finalPath).catch((): null => null))?.isDirectory()) {
+      throw new Error('找不到已解压的版本目录');
+    }
+    const error = await shell.openPath(receipt.finalPath);
+    if (error) throw new Error(`无法打开版本目录：${error}`);
+  });
+
   ipcMain.handle('sender:build-deploy-one', async (event, projectId: string) => {
     const project = config.senderProjects.find((item) => item.id === projectId);
-    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    if (project?.kind !== 'deploy') throw new Error(`未找到部署项目: ${projectId}`);
     const log = (msg: string): void => {
       try { event.sender.send('sender:log', { projectId, msg }); } catch { /* window closed */ }
     };
     return runBuildAndDeployProject(project, log);
   });
 
-  ipcMain.handle('sender:build-deploy-all', async (event) => {
-    const log = (msg: string): void => {
-      try { event.sender.send('sender:log', { projectId: '__all__', msg }); } catch { /* window closed */ }
-    };
-    return runBuildAndDeployAllProjects(config.senderProjects, log);
-  });
-
   ipcMain.handle('sender:build-local-one', async (event, projectId: string) => {
     const project = config.senderProjects.find((item) => item.id === projectId);
-    if (!project) throw new Error(`未找到项目: ${projectId}`);
+    if (project?.kind !== 'deploy') throw new Error(`未找到部署项目: ${projectId}`);
     const log = (msg: string): void => {
       try { event.sender.send('sender:log', { projectId, msg }); } catch { /* window closed */ }
     };
     return runBuildProjectOnly(project, log);
-  });
-
-  ipcMain.handle('sender:build-local-all', async (event) => {
-    const log = (msg: string): void => {
-      try { event.sender.send('sender:log', { projectId: '__all__', msg }); } catch { /* window closed */ }
-    };
-    return runBuildAllProjectsOnly(config.senderProjects, log);
   });
 };
 

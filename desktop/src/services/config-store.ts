@@ -1,25 +1,13 @@
 import { app } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AppConfig, SenderProject } from '../shared/types';
+import { AppConfig, SourceTarget } from '../shared/types';
 
-const createDefaultProject = (): SenderProject => ({
-  id: `project_${Date.now()}`,
-  name: '默认项目',
-  projectPath: '',
-  buildCommand: 'npm run build',
-  buildOutputDir: 'dist',
-  artifactOutputDir: '',
-  gitBranch: 'main',
-  receiverBaseUrl: 'http://127.0.0.1:17777',
-  receiverToken: 'change-me',
-  pagesProjectName: '',
-  deployBranch: 'main',
-});
+import { normalizeProjects } from '../shared/projects';
 
 const DEFAULT_CONFIG: AppConfig = {
   mode: 'sender',
-  senderProjects: [createDefaultProject()],
+  senderProjects: [],
   receiver: {
     host: '127.0.0.1',
     port: 17777,
@@ -29,6 +17,7 @@ const DEFAULT_CONFIG: AppConfig = {
     cloudflareApiToken: '',
     cloudflareAccountId: '',
     wranglerBin: 'wrangler',
+    sourceTargets: [],
   },
 };
 
@@ -60,46 +49,27 @@ const normalizeMode = (mode: unknown): AppConfig['mode'] =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
-const normalizeProjects = (
-  projects: Partial<SenderProject>[] | undefined,
-  legacy: LegacyConfig,
-): SenderProject[] => {
-  if (projects && projects.length > 0) {
-    return projects.map((project, index) => ({
-      ...createDefaultProject(),
-      ...project,
-      id: project.id?.trim() || `project_${Date.now()}_${index}`,
-      name: project.name?.trim() || `项目 ${index + 1}`,
-    }));
-  }
-
-  if (legacy.senderProfile) {
-    const profile = legacy.senderProfile;
-    return [
-      {
-        ...createDefaultProject(),
-        id: profile.id?.trim() || `project_${Date.now()}`,
-        name: profile.name?.trim() || '迁移项目',
-        projectPath: profile.projectPath ?? '',
-        buildCommand: profile.buildCommand ?? 'npm run build',
-        buildOutputDir: profile.buildOutputDir ?? 'dist',
-        artifactOutputDir: profile.artifactOutputDir ?? '',
-        gitBranch: profile.gitBranch ?? 'main',
-        receiverBaseUrl: profile.receiverBaseUrl ?? 'http://127.0.0.1:17777',
-        receiverToken: profile.receiverToken ?? 'change-me',
-        pagesProjectName: profile.projectName ?? '',
-        deployBranch: profile.deployBranch ?? 'main',
-      },
-    ];
-  }
-
-  return [createDefaultProject()];
+const normalizeTargets = (raw: unknown): SourceTarget[] => {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new Error('源码接收目录配置格式无效');
+  const ids = new Set<string>();
+  return raw.map((target) => {
+    if (!isRecord(target) || typeof target.id !== 'string' || !target.id.trim()
+      || typeof target.name !== 'string' || !target.name.trim()
+      || typeof target.path !== 'string' || !path.isAbsolute(target.path)) {
+      throw new Error('请为每个源码接收目录设置名称并选择本机目录');
+    }
+    const id = target.id.trim();
+    if (ids.has(id)) throw new Error('源码接收目录的标识重复');
+    ids.add(id);
+    return { id, name: target.name.trim(), path: path.normalize(target.path) };
+  });
 };
 
 export class ConfigStore {
   private readonly filePath: string;
 
-  constructor() {
+  constructor(private readonly hasPendingSource: (id: string) => boolean) {
     const userDataDir = app.getPath('userData');
     ensureDir(userDataDir);
     this.filePath = path.join(userDataDir, 'config.json');
@@ -124,17 +94,19 @@ export class ConfigStore {
     }
 
     const parsed = raw as Partial<AppConfig> & LegacyConfig;
-    const senderProjects = Array.isArray(parsed.senderProjects) ? parsed.senderProjects : undefined;
-    const receiver = isRecord(parsed.receiver) ? parsed.receiver : {};
+    const legacy = parsed.senderProfile;
+    const rows = parsed.senderProjects ?? (legacy ? [{ ...legacy, pagesProjectName: legacy.projectName }] : []);
+    if (!Array.isArray(rows)) throw new Error('项目列表格式无效');
+    const receiver: Record<string, unknown> = isRecord(parsed.receiver) ? parsed.receiver : {};
 
     return {
       ...DEFAULT_CONFIG,
-      ...parsed,
       mode: normalizeMode(parsed.mode),
-      senderProjects: normalizeProjects(senderProjects, parsed),
+      senderProjects: normalizeProjects(rows, this.hasPendingSource),
       receiver: {
         ...DEFAULT_CONFIG.receiver,
         ...receiver,
+        sourceTargets: normalizeTargets(receiver.sourceTargets),
       },
     };
   }

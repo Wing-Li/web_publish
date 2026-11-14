@@ -20,14 +20,19 @@ export const appLayoutTemplate = `
     <!-- Navigation -->
     <nav class="flex-1 px-4 py-8 space-y-2">
       <div class="px-4 mb-4">
-        <span class="text-[10px] font-bold text-slate-400 tracking-widest">运行模式</span>
+        <span class="text-[10px] font-bold text-slate-400 tracking-widest">工作区</span>
       </div>
       
       <button id="navSenderBtn" class="w-full flex items-center gap-3 px-4 h-12 rounded-2xl text-sm font-bold transition-all duration-200 group nav-btn-active">
         <div class="w-8 h-8 rounded-xl bg-teal-50 flex items-center justify-center text-teal-600 group-hover:scale-110 transition-transform">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
         </div>
-        发送端工作区
+        部署项目
+      </button>
+
+      <button id="navSourceBtn" class="w-full flex items-center gap-3 px-4 h-12 rounded-2xl text-sm font-bold text-slate-500 hover:bg-slate-50">
+        <div class="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center font-mono" aria-hidden="true">&lt;/&gt;</div>
+        源码项目
       </button>
 
       <button id="navReceiverBtn" class="w-full flex items-center gap-3 px-4 h-12 rounded-2xl text-sm font-bold transition-all duration-200 group text-slate-500 hover:bg-slate-50">
@@ -109,6 +114,28 @@ export const appLayoutTemplate = `
         </div>
       </div>
     </header>
+
+    <dialog id="createProjectDialog" aria-labelledby="createProjectTitle" class="m-auto max-w-md w-11/12 rounded-3xl p-6 shadow-2xl backdrop:bg-slate-900/35">
+      <form method="dialog" class="space-y-5">
+        <h2 id="createProjectTitle" class="text-lg font-bold text-slate-800">创建项目</h2>
+        <fieldset class="grid grid-cols-2 gap-3">
+          <legend class="form-label-new mb-2">项目类型</legend>
+          <label class="cursor-pointer rounded-xl border border-slate-200 p-3 has-[:checked]:border-teal-600">
+            <input type="radio" name="projectKind" value="deploy" /> 部署项目
+            <span class="block text-xs text-slate-500 mt-1">本地打包或部署到 Pages</span>
+          </label>
+          <label class="cursor-pointer rounded-xl border border-slate-200 p-3 has-[:checked]:border-teal-600">
+            <input type="radio" name="projectKind" value="source" /> 源码项目
+            <span class="block text-xs text-slate-500 mt-1">发送源码到远端版本目录</span>
+          </label>
+        </fieldset>
+        <label class="block"><span class="form-label-new">项目名称</span>
+          <input id="newProjectName" class="form-input-new" placeholder="输入项目名称" required />
+        </label>
+        <div class="flex justify-end gap-2"><button type="button" id="cancelCreateProject" class="btn-secondary">取消</button>
+          <button value="create" type="submit" class="btn-primary">创建</button></div>
+      </form>
+    </dialog>
 
     <!-- Scrollable Content Area -->
     <div class="flex-1 overflow-y-auto p-10 custom-scrollbar scroll-smooth">

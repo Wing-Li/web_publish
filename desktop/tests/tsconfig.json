@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "electron"],
+    "outDir": "../node_modules/.cache/source-tests",
+    "rootDir": ".."
+  },
+  "include": ["source-delivery.test.ts"],
+  "exclude": ["../node_modules", "../.vite"]
+}

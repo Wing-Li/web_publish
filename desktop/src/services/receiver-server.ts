@@ -12,6 +12,7 @@ import {
   UploadStatusResponse,
 } from '../shared/types';
 import { runCommand } from '../shared/run-command';
+import { SourceReceiver } from './source-receiver';
 
 interface DeploymentMetadata {
   projectName: string;
@@ -301,6 +302,13 @@ const mergeChunksToZip = async (
 export class ReceiverServer {
   private server: http.Server | null = null;
 
+  private readonly sources = new SourceReceiver(() => this.getConfig());
+  private activeWorkRoot?: string;
+
+  getSourceReceipts() {
+    return this.sources.receipts(this.activeWorkRoot ?? path.join(os.homedir(), this.getConfig().workRootName));
+  }
+
   private readonly tasks = new Map<string, DeploymentTask>();
 
   private queue: Promise<void> = Promise.resolve();
@@ -336,6 +344,7 @@ export class ReceiverServer {
     const cfg = this.getConfig();
     const workRoot = path.join(os.homedir(), cfg.workRootName);
     ensureDir(workRoot);
+    this.activeWorkRoot = workRoot;
 
     this.server = http.createServer((req, res) => {
       this.handleRequest(req, res, workRoot).catch((err) => {
@@ -366,6 +375,7 @@ export class ReceiverServer {
     });
 
     this.server = null;
+    this.activeWorkRoot = undefined;
   }
 
   private async handleRequest(
@@ -375,6 +385,11 @@ export class ReceiverServer {
   ): Promise<void> {
     const method = req.method ?? 'GET';
     const url = req.url ?? '/';
+
+    if (url.startsWith('/api/v1/source/')) {
+      await this.sources.handle(req, res, workRoot);
+      return;
+    }
 
     if (method === 'GET' && url === '/healthz') {
       json(res, 200, { ok: true });

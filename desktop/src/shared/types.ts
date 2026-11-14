@@ -1,17 +1,60 @@
 export type AppMode = 'sender' | 'receiver' | 'both';
 
-export interface SenderProject {
+interface ProjectConnection {
   id: string;
   name: string;
   projectPath: string;
+  receiverBaseUrl: string;
+  receiverToken: string;
+}
+
+export interface DeployProject extends ProjectConnection {
+  kind: 'deploy';
   buildCommand: string;
   buildOutputDir: string;
   artifactOutputDir: string;
   gitBranch: string;
-  receiverBaseUrl: string;
-  receiverToken: string;
   pagesProjectName: string;
   deployBranch: string;
+}
+
+export interface SourceProject extends ProjectConnection {
+  kind: 'source';
+  sourceTargetId: string;
+}
+
+export type SenderProject = DeployProject | SourceProject;
+
+/** 接收端为发送端公开的源码存放目录。 */
+export interface SourceTarget {
+  id: string;
+  name: string;
+  path: string;
+}
+
+export interface SourceInitRequest {
+  targetId: string;
+  projectName: string;
+  fileSize: number;
+  fileSha256: string;
+  chunkSize: number;
+  chunkCount: number;
+}
+
+export interface SourceTaskStatus {
+  id: string;
+  status: 'uploading' | 'extracting' | 'success' | 'failed';
+  uploadedIndexes: number[];
+  finalPath?: string;
+  error?: string;
+}
+
+export interface SourceReceipt {
+  id: string;
+  projectName: string;
+  targetName: string;
+  finalPath: string;
+  completedAt: string;
 }
 
 export interface ReceiverConfig {
@@ -23,6 +66,7 @@ export interface ReceiverConfig {
   cloudflareApiToken: string;
   cloudflareAccountId: string;
   wranglerBin: string;
+  sourceTargets: SourceTarget[];
 }
 
 export interface AppConfig {
@@ -87,24 +131,6 @@ export interface UploadCompleteResponse {
 export interface BuildLocalResult {
   projectId: string;
   artifactPath: string;
-}
-
-export interface BatchBuildAndDeployResult {
-  submitted: BuildAndDeployResult[];
-  failed: Array<{
-    projectId: string;
-    projectName: string;
-    error: string;
-  }>;
-}
-
-export interface BatchBuildLocalResult {
-  succeeded: BuildLocalResult[];
-  failed: Array<{
-    projectId: string;
-    projectName: string;
-    error: string;
-  }>;
 }
 
 /** 单项目部署的客户端进度步骤 */
