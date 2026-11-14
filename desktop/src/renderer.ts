@@ -291,6 +291,8 @@ const renderProjectCards = (): void => {
       else openProjectConfigs.delete(p.id);
     };
     if (p.kind === 'source') {
+      const log = card.querySelector<HTMLElement>('.log-output');
+      if (log && projectLogMap.get(p.id)) log.scrollTop = log.scrollHeight;
       let panel = sourcePanels.get(p.id);
       if (!panel) { panel = newSourcePanel(); sourcePanels.set(p.id, panel); }
       if (!panel.initialized) void refreshSourcePanel(p, panel, Boolean(p.sourceTargetId));
@@ -456,9 +458,11 @@ const runSourceSend = async (project: SourceProject, panel: SourcePanelState, re
     const { finalPath } = await window.desktopApi.sendSource(project.id, retry);
     panel.finalPath = finalPath;
     panel.pending = false;
+    appendLog(project.id, `✓ 接收端已校验并解压到：${finalPath}\n`);
     showToast('源码已解压到远端版本目录', 'success');
   } catch (err) {
-    panel.error = errorText(err);
+    panel.error = errorText(err).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
+    appendLog(project.id, `✗ 源码发送失败：${panel.error}\n`);
     const info = await window.desktopApi.getSourceInfo(project.id, project.projectPath).catch((): undefined => undefined);
     panel.pending = info?.pending;
     handleError(err, project.id);

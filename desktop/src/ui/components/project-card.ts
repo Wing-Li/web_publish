@@ -13,7 +13,7 @@ export interface DeployStep {
   status: StepStatus;
 }
 
-type LogPhase = 'build' | 'zip' | 'upload' | 'deploy' | 'other';
+type LogPhase = 'build' | 'zip' | 'upload' | 'extract' | 'sourceDone' | 'sourceFailed' | 'deploy' | 'other';
 
 interface LogSection {
   phase: LogPhase;
@@ -39,6 +39,24 @@ const LOG_PHASE_META: Record<LogPhase, { title: string; badgeClass: string; sect
     badgeClass: 'bg-amber-100 text-amber-800 border border-amber-200',
     sectionClass: 'border-amber-500/15 bg-amber-500/[0.08]',
     dotClass: 'bg-amber-400',
+  },
+  extract: {
+    title: '接收端处理',
+    badgeClass: 'bg-sky-100 text-sky-800 border border-sky-200',
+    sectionClass: 'border-sky-500/15 bg-sky-500/[0.08]',
+    dotClass: 'bg-sky-400',
+  },
+  sourceDone: {
+    title: '发送完成',
+    badgeClass: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
+    sectionClass: 'border-emerald-500/15 bg-emerald-500/[0.08]',
+    dotClass: 'bg-emerald-400',
+  },
+  sourceFailed: {
+    title: '发送失败',
+    badgeClass: 'bg-rose-100 text-rose-800 border border-rose-200',
+    sectionClass: 'border-rose-500/15 bg-rose-500/[0.08]',
+    dotClass: 'bg-rose-400',
   },
   deploy: {
     title: '部署阶段',
@@ -71,6 +89,11 @@ const phaseFromHeader = (line: string): LogPhase | null => {
 };
 
 const phaseFromLine = (line: string, currentPhase: LogPhase): LogPhase => {
+  if (line.startsWith('✓ 接收端已校验并解压到：')) return 'sourceDone';
+  if (line.startsWith('✗ 源码发送失败：')) return 'sourceFailed';
+  if (line.startsWith('接收端正在校验并解压源码')) return 'extract';
+  if (line === '正在准备发送…' || line === '正在继续原任务…') return 'other';
+  if (line.startsWith('开始打包当前工作目录')) return 'zip';
   if (/执行构建命令|构建完成|npm |pnpm |yarn |vite |building/i.test(line)) return 'build';
   if (/压缩|zipPath|zip\b|adding:/i.test(line)) return 'zip';
   if (/上传|uploadId|分片|chunk|receiverBaseUrl|接收端/i.test(line)) return 'upload';
@@ -146,7 +169,7 @@ const renderLogLine = (line: string): string => {
       : `<span class="mt-1 h-1.5 w-1.5 rounded-full bg-slate-600"></span><span class="${toneClass}">${esc(line)}</span>`;
 
   return `
-    <div class="grid grid-cols-[12px,1fr] gap-3 items-start text-[12px] leading-6 break-all">
+    <div class="grid grid-cols-[12px_minmax(0,1fr)] gap-3 items-start text-[12px] leading-6 break-all">
       ${marker}
     </div>
   `;

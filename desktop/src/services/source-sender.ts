@@ -229,9 +229,10 @@ export class SourceSender {
       });
       if (result.status === 'uploading') {
         await this.uploadMissing(pending, archive, endpoint, token, result.uploadedIndexes, onLog);
-        onLog('分片已上传，正在由接收端校验并解压…\n');
+        onLog('✓ 全部分片已上传。\n');
         result = await status(`${endpoint}/complete`, { method: 'POST' });
       }
+      if (result.status === 'extracting') onLog('接收端正在校验并解压源码…\n');
       while (result.status === 'extracting') {
         await delay(1000);
         result = await status(endpoint);
