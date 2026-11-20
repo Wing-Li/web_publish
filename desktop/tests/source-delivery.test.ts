@@ -21,6 +21,54 @@ async function availablePort(): Promise<number> {
   return port;
 }
 
+test('读取目录时保留嵌套网络错误的原因，并提供中文处理办法', async t => {
+  const sender = new SourceSender(os.tmpdir());
+  const project: SourceProject = {
+    id: 'error-help', name: '错误提示', projectPath: '', kind: 'source', gitBranch: '',
+    artifactOutputDir: '', receiverBaseUrl: 'https://receiver.example', receiverToken: 'fixture', sourceTargetId: '',
+  };
+  const cases = [
+    { cause: Object.assign(new Error('certificate error'), { code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' }), expected: /无法验证.*HTTPS 证书[\s\S]*证书链[\s\S]*切换网络/ },
+    { cause: new AggregateError([Object.assign(new Error('lookup failed'), { code: 'ENOTFOUND' })]), expected: /无法解析接收端域名[\s\S]*DNS/ },
+    { cause: Object.assign(new Error('timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' }), expected: /超时[\s\S]*接收服务和隧道/ },
+    { cause: undefined, expected: /暂时无法确定具体原因[\s\S]*\/healthz/ },
+  ];
+  for (const { cause, expected } of cases) {
+    const mock = t.mock.method(globalThis, 'fetch', async () => {
+      throw new TypeError('fetch failed', { cause });
+    });
+    await assert.rejects(sender.getTargets(project), error => {
+      assert.match((error as Error).message, expected);
+      assert.doesNotMatch((error as Error).message, /fetch failed|fixture/);
+      return true;
+    });
+    mock.mock.restore();
+  }
+});
+
+test('目录接口的鉴权、网关和非接口响应提供不同的修正提示', async t => {
+  const sender = new SourceSender(os.tmpdir());
+  const project: SourceProject = {
+    id: 'http-help', name: '接口提示', projectPath: '', kind: 'source', gitBranch: '',
+    artifactOutputDir: '', receiverBaseUrl: 'https://receiver.example', receiverToken: 'fixture', sourceTargetId: '',
+  };
+  for (const [status, expected] of [
+    [401, /鉴权失败[\s\S]*复制[\s\S]*Token/],
+    [403, /拒绝访问[\s\S]*访问规则/],
+    [404, /未找到源码接收接口[\s\S]*更新/],
+    [502, /网关暂时异常[\s\S]*隧道/],
+    [200, /数据格式不正确[\s\S]*网页登录/],
+  ] as const) {
+    const mock = t.mock.method(globalThis, 'fetch', async () => new Response('<html>Sign in</html>', { status }));
+    await assert.rejects(sender.getTargets(project), expected);
+    mock.mock.restore();
+  }
+  const mock = t.mock.method(globalThis, 'fetch', async () => { throw new Error('不应发送请求'); });
+  await assert.rejects(sender.getTargets({ ...project, receiverBaseUrl: '域名缺少协议' }), /完整地址/);
+  await assert.rejects(sender.getTargets({ ...project, receiverToken: '' }), /复制.*Token/);
+  assert.equal(mock.mock.callCount(), 0);
+});
+
 test('Finder 根规则保留目录遍历、按顺序取消忽略和转义文件名的语义', () => {
   const ignored = rootIgnoreMatcher([
     'dist/', '!dist/keep.txt', '/root.*', '**/private/**', 'x[!0-9]?.log', 'a/**/z.txt',
@@ -127,7 +175,7 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
 
   await receiver.start();
   assert.deepEqual(await sender.getTargets(project), config.sourceTargets);
-  await assert.rejects(sender.getTargets({ ...project, receiverToken: 'incorrect' }), /401/);
+  await assert.rejects(sender.getTargets({ ...project, receiverToken: 'incorrect' }), /401[\s\S]*Token[\s\S]*两端完全一致/);
   const putIndexes: number[] = [];
   const taskIds = new Set<string>();
   t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 10, 14, 14, 25, 47) });
@@ -141,7 +189,9 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
       if (interrupt) {
         interrupt = false;
         await response.arrayBuffer();
-        throw new Error('模拟已接收第一个分片但回执丢失');
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('模拟已接收第一个分片但回执丢失'), { code: 'ECONNRESET' }),
+        });
       }
     }
     return response;
@@ -149,7 +199,7 @@ test('源码发送中断后跨重启续传原快照；主动再次发送产生�
   const log = (): void => { /* 仅验证最终产物和实际传输。 */ };
   await assert.rejects(sender.send({ ...project, gitBranch: 'other' }, false, log), /与配置 other 不一致/);
   assert.equal(sender.getPending(project.id), false);
-  await assert.rejects(sender.send(project, false, log), /回执丢失/);
+  await assert.rejects(sender.send(project, false, log), /连接中断/);
   assert.equal(sender.getPending(project.id), true);
   assert.equal((await receiver.getSourceReceipts()).length, 0);
   await receiver.stop();

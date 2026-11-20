@@ -10,6 +10,7 @@ export interface SourcePanelState {
   hasRootIgnore?: boolean;
   targets: SourceTarget[];
   notice: string;
+  noticeIsError: boolean;
   error: string;
   finalPath: string;
 }
@@ -21,6 +22,7 @@ export const newSourcePanel = (): SourcePanelState => ({
   initialized: false,
   targets: [],
   notice: '',
+  noticeIsError: false,
   error: '',
   finalPath: '',
 });
@@ -39,7 +41,7 @@ export const sourceTargetMarkup = (project: SourceProject, panel: SourcePanelSta
           <button type="button" class="btn-secondary btn-sm" data-action="source-refresh" data-id="${id}" ${panel.loading || busy || panel.sending ? 'disabled' : ''}>刷新目录</button>
         </div>
         ${selected ? `<p class="font-mono text-xs text-slate-600 mt-2 break-all">${esc(selected.path)}</p>` : ''}
-        ${panel.notice ? `<p role="status" class="mt-2 text-xs text-slate-600 break-all">${esc(panel.notice)}</p>` : ''}
+        ${panel.notice ? `<p role="${panel.noticeIsError ? 'alert' : 'status'}" class="mt-2 text-xs leading-relaxed whitespace-pre-line break-words ${panel.noticeIsError ? 'rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-900' : 'text-slate-600'}">${esc(panel.notice)}</p>` : ''}
       </div>
 `;
 };
@@ -49,7 +51,7 @@ export const sourceResultMarkup = (project: SourceProject, panel: SourcePanelSta
   return `
     ${project.projectPath && panel.hasRootIgnore === false ? '<p class="text-xs text-amber-800">根目录缺少 .gitignore，本地配置和依赖文件也可能被打包。</p>' : ''}
     ${panel.pending ? '<p class="text-xs text-amber-800">有未完成的发送。「继续原任务」使用上次的源码包和接收目录。</p>' : ''}
-      ${panel.error ? `<p role="alert" class="text-xs text-rose-700 break-all">${esc(panel.error)}</p>` : ''}
+      ${panel.error ? `<p role="alert" class="text-xs text-rose-700 whitespace-pre-line break-words">${esc(panel.error)}</p>` : ''}
       ${panel.finalPath ? `
         <div role="status" class="rounded-xl border border-teal-200 bg-white p-3 space-y-1">
           <p class="font-bold text-xs text-teal-700">已解压到远端版本目录</p>

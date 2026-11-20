@@ -4,6 +4,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { artifactDirectory, sourceVersionTime, validateProjectBeforePack } from './project-artifact';
 import { packSource } from './source-pack/pack';
+import { receiverConnectionError, receiverHttpError } from './receiver-request-error';
 import type { SourceProject, SourceInitRequest, SourceTarget, SourceTaskStatus } from '../shared/types';
 
 const CHUNK_SIZE = 9 * 1024 * 1024;
@@ -15,9 +16,11 @@ interface PendingSource {
 }
 
 function receiverAddress(project: SourceProject): string {
-  const address = new URL(project.receiverBaseUrl);
+  let address: URL;
+  try { address = new URL(project.receiverBaseUrl); }
+  catch { throw new Error('接收端服务地址无效。请填写完整地址，例如 https://你的接收端域名。'); }
   if (!['http:', 'https:'].includes(address.protocol) || address.username || address.password ||
-      address.hash || address.search) throw new Error('请填写有效的 HTTP(S) 接收端地址。');
+      address.hash || address.search) throw new Error('接收端服务地址无效。请使用 http:// 或 https:// 开头的地址，不要附带账号密码、查询参数或 # 标记。');
   return address.href.replace(/\/+$/, '');
 }
 
@@ -53,23 +56,35 @@ async function saveSourceZip(archive: string, outputDir: string, prefix: string,
 }
 
 async function request<T>(url: string, token: string, options: RequestInit = {}, missingRouteHint?: string): Promise<T> {
-  if (!token.trim()) throw new Error('请填写接收端鉴权 Token。');
-  const response = await fetch(url, {
-    ...options,
-    redirect: 'error',
-    signal: AbortSignal.timeout(120_000),
-    headers: { Authorization: `Bearer ${token}`, ...options.headers },
-  });
+  if (!token.trim()) throw new Error('尚未填写接收端鉴权 Token。请从接收端复制当前的“鉴权 Token”，粘贴到此处。');
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      redirect: 'error',
+      signal: AbortSignal.timeout(120_000),
+      headers: { Authorization: `Bearer ${token}`, ...options.headers },
+    });
+  } catch (error) {
+    throw new Error(receiverConnectionError(error));
+  }
   if (!response.ok) {
-    if (response.status === 404 && missingRouteHint) throw new Error(missingRouteHint);
     let detail = '';
     try {
       const body = await response.json();
       detail = String(body.message || body.error || '').slice(0, 300);
     } catch { /* Some proxies return HTML errors. */ }
-    throw new Error(`接收端返回 HTTP ${response.status}。${detail}`);
+    if (response.status === 404 && missingRouteHint) throw new Error(missingRouteHint);
+    throw new Error(receiverHttpError(response.status) ??
+      `接收端拒绝了请求（HTTP ${response.status}）。请核对服务地址和项目配置。${detail}`);
   }
-  return response.json() as Promise<T>;
+  try { return await response.json() as T; }
+  catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error('接收端返回的数据格式不正确。请确认服务地址指向本工具的接收服务；如果该地址需要网页登录，请管理员检查网关的访问规则。');
+    }
+    throw new Error(receiverConnectionError(error));
+  }
 }
 
 function validateStatus(result: SourceTaskStatus, id: string): SourceTaskStatus {

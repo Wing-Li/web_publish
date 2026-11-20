@@ -2,7 +2,7 @@
   "name": "desktop",
   "productName": "QuickPackTool",
   "displayName": "便捷打包工具",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "My Electron application description",
   "main": ".vite/build/main.js",
   "private": true,

@@ -400,7 +400,8 @@ const updateSourcePanel = (project: SourceProject): void => {
   retry.disabled = busy;
 };
 
-const errorText = (err: unknown): string => err instanceof Error ? err.message : String(err);
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+  .replace(/^Error invoking remote method '[^']+':\s*(?:\w*Error:\s*)?/, '');
 
 const refreshSourcePanel = async (project: SourceProject, panel: SourcePanelState, loadTargets = true): Promise<void> => {
   const request = ++panel.request;
@@ -412,6 +413,7 @@ const refreshSourcePanel = async (project: SourceProject, panel: SourcePanelStat
   panel.loading = loadTargets;
   panel.targets = [];
   panel.notice = loadTargets ? '' : '发送前请刷新并选择接收目录。';
+  panel.noticeIsError = false;
   panel.hasRootIgnore = undefined;
   updateSourcePanel(project);
   const info = window.desktopApi.getSourceInfo(project.id, project.projectPath).then(result => {
@@ -434,8 +436,13 @@ const refreshSourcePanel = async (project: SourceProject, panel: SourcePanelStat
   const results = await Promise.allSettled([info, targets]);
   const current = currentPanelProject();
   if (!current) return;
-  for (const result of results) {
-    if (result.status === 'rejected') panel.notice = errorText(result.reason);
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      panel.noticeIsError = true;
+      panel.notice = index === 1
+        ? `无法获取接收目录。\n${errorText(result.reason)}\n处理完成后，点击“刷新目录”重试。`
+        : `读取本地项目信息失败：${errorText(result.reason)}\n请检查项目路径是否存在且有访问权限，再点击“刷新目录”重试。`;
+    }
   }
   panel.loading = false;
   updateSourcePanel(current);
@@ -461,7 +468,7 @@ const runSourceSend = async (project: SourceProject, panel: SourcePanelState, re
     appendLog(project.id, `✓ 接收端已校验并解压到：${finalPath}\n`);
     showToast('源码已解压到远端版本目录', 'success');
   } catch (err) {
-    panel.error = errorText(err).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
+    panel.error = errorText(err);
     appendLog(project.id, `✗ 源码发送失败：${panel.error}\n`);
     const info = await window.desktopApi.getSourceInfo(project.id, project.projectPath).catch((): undefined => undefined);
     panel.pending = info?.pending;
@@ -615,7 +622,7 @@ const extractPermissionPath = (message: string): string => {
 };
 
 const handleError = (err: unknown, projectId?: string): void => {
-  const rawMsg = err instanceof Error ? err.message : String(err);
+  const rawMsg = errorText(err);
   const msg = rawMsg.replace('[MAC_PERMISSION_REQUIRED]', '').trim();
   showToast(msg, 'error');
   if (rawMsg.includes('[MAC_PERMISSION_REQUIRED]')) {
